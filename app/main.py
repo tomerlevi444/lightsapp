@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import os
 import logging
 import httpx
@@ -191,23 +192,6 @@ def play_song(song_name: str) -> dict:
     if os.path.exists(exact):
         return _start_playback(exact)
 
-    # Try glob pattern (handles extra suffixes or spacing)
-    pattern = os.path.join(songs_dir, f"{song_name}*.mp3")
-    matches = glob.glob(pattern)
-    if matches:
-        return _start_playback(matches[0])
-
-    # Fallback: case-insensitive search for a matching start
-    try:
-        p = Path(songs_dir)
-        if p.exists():
-            for fp in p.rglob("*.mp3"):
-                name = fp.stem
-                if name.lower().startswith(song_name.lower()):
-                    return _start_playback(str(fp))
-    except Exception:
-        logger.exception("Error scanning songs directory %s", songs_dir)
-
     msg = f"song mp3 not found for '{song_name}' in {songs_dir}"
     logger.info(msg)
     return {"played": False, "path": None, "error": msg}
@@ -393,6 +377,15 @@ def get_current_song():
         if not songs:
             return {"song": None, "index": None}
         return {"song": songs[current_song_index], "index": current_song_index}
+
+
+# Serve admin page at /admin (maps to static/admin.html)
+@app.get("/admin")
+def admin_page():
+    admin_path = os.path.join(os.getcwd(), "static", "admin.html")
+    if os.path.exists(admin_path):
+        return FileResponse(admin_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="admin page not found")
 
 
 # Serve the frontend from the `static` directory at the root path

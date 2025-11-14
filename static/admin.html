@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lights App — Admin</title>
+  <style>
+  body { font-family: Arial, sans-serif; padding: 40px; }
+  .ctl { padding: 18px 28px; font-size: 18px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 160px; }
+  #doubleBtn { font-size: 20px; min-width: 220px; padding: 20px 36px; }
+  #status { margin-top: 20px; font-size: 20px; font-weight: 600; }
+  .ctl:active { transform: translateY(1px); }
+  #buttons { display:flex; gap:12px; flex-wrap:wrap; align-items:center }
+  a.back { display:inline-block; margin-bottom:18px; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">← Home</a>
+  <div id="buttons">
+    <button id="singleBtn" class="ctl">Single</button>
+    <button id="doubleBtn" class="ctl">Next Song</button>
+    <button id="multiBtn" class="ctl">Multi</button>
+    <button id="longBtn" class="ctl">Long</button>
+  </div>
+
+  <script>
+    // Authentication
+    (function() {
+      const expectedPass = 'admin';
+      const pass = prompt('Password:');
+      if (pass !== expectedPass) {
+        alert('Invalid password');
+        window.location.href = '/';
+        return;
+      }
+    })();
+
+    function setStatus(text, isError=false) {
+      // Status display disabled
+    }
+
+    async function postPress(path) {
+      try {
+        const res = await fetch(path, { method: 'POST' });
+        const data = await res.json();
+        return data;
+      } catch (err) {
+        console.error('Request failed', err);
+        return null;
+      }
+    }
+
+    async function handleSingle() {
+      await postPress('/api/single_press');
+    }
+
+    async function handleDouble() {
+      await postPress('/api/double_press');
+    }
+
+    async function handleMulti() {
+      await postPress('/api/multi_press');
+    }
+
+    async function handleLong() {
+      await postPress('/api/long_press');
+    }
+
+    document.getElementById('singleBtn').addEventListener('click', handleSingle);
+    document.getElementById('doubleBtn').addEventListener('click', handleDouble);
+    document.getElementById('multiBtn').addEventListener('click', handleMulti);
+    document.getElementById('longBtn').addEventListener('click', handleLong);
+
+    // Status display disabled
+    // No polling needed
+  </script>
+</body>
+</html>

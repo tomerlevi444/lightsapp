@@ -20,7 +20,7 @@ pip install -r requirements.txt
 3. Run the app with uvicorn (from project root):
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info --no-access-log --reload
 ```
 
 4. Open the frontend at http://127.0.0.1:8000/
