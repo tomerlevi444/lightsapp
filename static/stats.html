@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Statistics — Lights App</title>
+  <style>
+  body { font-family: Arial, sans-serif; padding: 40px; }
+  a.back { display:inline-block; margin-bottom:18px; text-decoration: none; color: #0066cc; }
+  a.back:hover { text-decoration: underline; }
+  .chart-container { margin-top: 30px; }
+  .bar { display: flex; align-items: center; margin-bottom: 10px; }
+  .bar-label { width: 300px; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-label.excluded { color: red; }
+  .bar-visual { height: 30px; background: #4CAF50; margin: 0 10px; min-width: 2px; }
+  .bar-value { font-size: 14px; font-weight: bold; min-width: 30px; }
+  .stats-info { margin-top: 30px; font-size: 16px; font-weight: 600; padding-top: 20px; border-top: 1px solid #ccc; }
+  .excluded-section { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ccc; }
+  .excluded-section h2 { font-size: 18px; margin-bottom: 15px; }
+  .excluded-list { list-style: none; padding: 0; }
+  .excluded-list li { padding: 8px; background: #ffebee; margin-bottom: 5px; border-radius: 4px; display: flex; justify-content: space-between; }
+  .excluded-song { font-size: 14px; }
+  .excluded-count { font-weight: bold; color: #c62828; }
+  h1 { margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/admin">← Back to Admin</a>
+  <h1>Skip Statistics</h1>
+  <div class="chart-container" id="chart"></div>
+  <div class="stats-info" id="stats"></div>
+  <div class="excluded-section" id="excluded"></div>
+
+  <script>
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        
+        const chart = document.getElementById('chart');
+        const statsInfo = document.getElementById('stats');
+        
+        if (!data.skip_counts || Object.keys(data.skip_counts).length === 0) {
+          chart.innerHTML = '<p>No skip data available yet.</p>';
+          statsInfo.innerHTML = `Total number of songs: ${data.total_songs || 0}`;
+          return;
+        }
+        
+        // Convert to array and sort by skip count descending
+        const skipData = Object.entries(data.skip_counts)
+          .filter(([_, count]) => count > 0)
+          .sort((a, b) => b[1] - a[1]);
+        
+        if (skipData.length === 0) {
+          chart.innerHTML = '<p>No songs have been skipped yet.</p>';
+          statsInfo.innerHTML = `Total number of songs: ${data.total_songs || 0}`;
+          return;
+        }
+        
+        // Find max for scaling
+        const maxSkips = Math.max(...skipData.map(([_, count]) => count));
+        
+        // Create set of excluded song names for quick lookup
+        const excludedSet = new Set(data.excluded_songs ? data.excluded_songs.map(([song, _]) => song) : []);
+        
+        // Create bars
+        chart.innerHTML = skipData.map(([song, count]) => {
+          const width = (count / maxSkips) * 500; // Max width 500px
+          const isExcluded = excludedSet.has(song);
+          const excludedClass = isExcluded ? ' excluded' : '';
+          return `
+            <div class="bar">
+              <div class="bar-label${excludedClass}" title="${song}">${song}</div>
+              <div class="bar-visual" style="width: ${width}px;"></div>
+              <div class="bar-value">${count}</div>
+            </div>
+          `;
+        }).join('');
+        
+        statsInfo.innerHTML = `Total number of songs: ${data.total_songs || 0}`;
+        
+        // Show excluded songs
+        const excludedDiv = document.getElementById('excluded');
+        if (data.excluded_songs && data.excluded_songs.length > 0) {
+          const excludedList = data.excluded_songs.map(([song, count]) => {
+            return `
+              <li>
+                <span class="excluded-song">${song}</span>
+                <span class="excluded-count">${count} skips</span>
+              </li>
+            `;
+          }).join('');
+          excludedDiv.innerHTML = `
+            <h2>Songs Excluded from Playlist</h2>
+            <ul class="excluded-list">${excludedList}</ul>
+          `;
+        } else {
+          excludedDiv.innerHTML = '';
+        }
+      } catch (err) {
+        console.error('Failed to load stats', err);
+        document.getElementById('chart').innerHTML = '<p>Error loading statistics.</p>';
+      }
+    }
+
+    loadStats();
+  </script>
+</body>
+</html>

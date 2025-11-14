@@ -1,0 +1,9 @@
+{
+  "main_folder": "~/Documents/midburn",
+  "clap_file": "clap.wav",
+  "power_hosts": "192.168.1.104",
+  "next_song_url": "http://192.168.1.183/next_song",
+  "show_lights_url": "http://192.168.1.183/show_lights",
+  "skip_threshold_seconds": 20,
+  "skip_percentile": 0.8
+}

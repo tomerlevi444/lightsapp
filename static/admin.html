@@ -12,16 +12,24 @@
   .ctl:active { transform: translateY(1px); }
   #buttons { display:flex; gap:12px; flex-wrap:wrap; align-items:center }
   a.back { display:inline-block; margin-bottom:18px; }
+  .separator { width: 100%; height: 1px; background: #ccc; margin: 8px 0; }
   </style>
 </head>
 <body>
   <a class="back" href="/">← Home</a>
+  <a class="back" href="/stats" style="margin-left: 20px;">Statistics</a>
+  <a class="back" href="/config" style="margin-left: 20px;">Config</a>
+  <div id="status">Ready</div>
   <div id="buttons">
     <button id="singleBtn" class="ctl">Single</button>
-    <button id="doubleBtn" class="ctl">Next Song</button>
+    <button id="doubleBtn" class="ctl">Double</button>
     <button id="multiBtn" class="ctl">Multi</button>
     <button id="longBtn" class="ctl">Long</button>
+    <div class="separator"></div>
+    <button id="clearHistoryBtn" class="ctl">Clear Playlist History</button>
+    <button id="addSongsBtn" class="ctl">Add Songs</button>
   </div>
+  <input type="file" id="fileInput" accept=".mp3" multiple style="display:none">
 
   <script>
     // Authentication
@@ -36,7 +44,9 @@
     })();
 
     function setStatus(text, isError=false) {
-      // Status display disabled
+      const status = document.getElementById('status');
+      status.textContent = text;
+      status.style.color = isError ? 'crimson' : '';
     }
 
     async function postPress(path) {
@@ -66,13 +76,70 @@
       await postPress('/api/long_press');
     }
 
+    async function handleClearHistory() {
+      if (confirm('Are you sure you want to clear the playlist history?')) {
+        await postPress('/api/clear_skip_counts');
+        alert('Playlist history cleared');
+      }
+    }
+
+    function handleAddSongs() {
+      document.getElementById('fileInput').click();
+    }
+
+    async function handleFileUpload(event) {
+      const files = event.target.files;
+      if (files.length === 0) return;
+
+      const formData = new FormData();
+      for (let file of files) {
+        formData.append('files', file);
+      }
+
+      try {
+        const res = await fetch('/api/upload_songs', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data.uploaded) {
+          alert(`Successfully uploaded ${data.uploaded} song(s)`);
+        } else {
+          alert('Upload failed');
+        }
+      } catch (err) {
+        console.error('Upload failed', err);
+        alert('Upload error');
+      }
+      // Reset file input
+      event.target.value = '';
+    }
+
     document.getElementById('singleBtn').addEventListener('click', handleSingle);
     document.getElementById('doubleBtn').addEventListener('click', handleDouble);
     document.getElementById('multiBtn').addEventListener('click', handleMulti);
     document.getElementById('longBtn').addEventListener('click', handleLong);
+    document.getElementById('clearHistoryBtn').addEventListener('click', handleClearHistory);
+    document.getElementById('addSongsBtn').addEventListener('click', handleAddSongs);
+    document.getElementById('fileInput').addEventListener('change', handleFileUpload);
 
-    // Status display disabled
-    // No polling needed
+    // Poll current song every 1 second
+    async function fetchCurrentSong() {
+      try {
+        const res = await fetch('/api/current_song');
+        const data = await res.json();
+        if (data.song) {
+          setStatus('Now playing: ' + data.song);
+        } else {
+          setStatus('Ready');
+        }
+      } catch (err) {
+        console.debug('Polling current song failed', err);
+      }
+    }
+
+    fetchCurrentSong();
+    setInterval(fetchCurrentSong, 1000)
   </script>
 </body>
 </html>

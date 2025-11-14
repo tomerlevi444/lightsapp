@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
@@ -13,6 +13,7 @@ import sys
 import shutil
 import glob
 from pathlib import Path
+import time
 
 # Configure basic logging so INFO/ERROR messages are visible on the console by default.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -22,19 +23,84 @@ logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 app = FastAPI()
 
-# Songs list (90s) - shuffled once at startup
-songs = [
-    "Nirvana - Smells Like Teen Spirit",
-    "Oasis - Wonderwall",
-    "TLC - No Scrubs",
-    "R.E.M. - Losing My Religion",
-    "Spice Girls - Wannabe",
-]
-# If a saved state exists, we'll load it at startup; otherwise shuffle once now.
-random.shuffle(songs)
+# Load configuration
+def load_config():
+    """Load configuration from config.json file."""
+    config_path = os.path.join(os.getcwd(), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load config.json, using defaults")
+        return {}
+
+config = load_config()
+
+# Songs list - loaded from configured songs folder
+songs = []
+
+def load_songs_from_folder():
+    """Load song list from configured songs folder."""
+    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    songs_dir = os.path.join(main_folder, "songs")
+    if not os.path.exists(songs_dir):
+        logger.warning("Songs directory not found: %s", songs_dir)
+        return []
+    
+    # Supported audio file extensions
+    audio_extensions = ['*.mp3', '*.wav', '*.m4a', '*.flac', '*.ogg']
+    song_files = []
+    
+    for ext in audio_extensions:
+        song_files.extend(glob.glob(os.path.join(songs_dir, ext)))
+    
+    # Extract just the filename without extension as song name
+    song_names = [os.path.splitext(os.path.basename(f))[0] for f in song_files]
+    logger.info("Found %d songs in %s", len(song_names), songs_dir)
+    return song_names
+
+
+def filter_songs_by_skip_count(all_songs: list[str]) -> list[str]:
+    """Filter songs to include only those at or below the configured percentile by skip count.
+    
+    Songs not in skip_counts have a score of 0.
+    Includes songs at percentile and below, including all songs with the same score.
+    """
+    if not all_songs:
+        return []
+    
+    # Create list of (song, skip_count) tuples
+    song_scores = [(song, skip_counts.get(song, 0)) for song in all_songs]
+    
+    # Sort by skip count (ascending)
+    song_scores.sort(key=lambda x: x[1])
+    
+    # Get percentile from config (default 0.8 = 80th percentile)
+    percentile = config.get("skip_percentile", 0.8)
+    
+    # Calculate percentile index
+    percentile_index = int(len(song_scores) * percentile)
+    if percentile_index >= len(song_scores):
+        percentile_index = len(song_scores) - 1
+    
+    # Get the skip count at percentile (this is the inclusion threshold)
+    threshold_score = song_scores[percentile_index][1]
+    
+    # Include all songs with skip count <= threshold
+    filtered = [song for song, score in song_scores if score <= threshold_score]
+    
+    logger.info("Filtered %d/%d songs at %.0f%% percentile (including skip_count <= %d)", 
+                len(filtered), len(all_songs), percentile * 100, threshold_score)
+    return filtered
 # index of the currently playing song in the songs list
 current_song_index = 0
-# lock to protect current_song_index for concurrent access
+# flag to track if playback is active
+playback_active = False
+# timestamp when current song started playing
+song_start_time: float | None = None
+# skip counts for each song
+skip_counts: dict[str, int] = {}
+# lock to protect current_song_index and playback_active for concurrent access
 songs_lock = threading.Lock()
 
 # Playback process (non-blocking) and lock so we can stop previous playback
@@ -43,8 +109,12 @@ playback_lock = threading.Lock()
 # generation counter to cancel watchers when playback is stopped
 playback_generation = 0
 
+# Clap playback processes
+clap_processes: list[subprocess.Popen] = []
+clap_lock = threading.Lock()
+
 # Power control endpoints
-POWER_HOSTS = os.getenv("POWER_HOSTS", "192.168.1.104")
+POWER_HOSTS = os.getenv("POWER_HOSTS", config.get("power_hosts", "192.168.1.104"))
 POWER_URLS = [f"http://{h}/cm?cmnd=Power%20On" for h in POWER_HOSTS.split(",")]  # default ON urls
 POWER_OFF_URLS = [u.replace("Power%20On", "Power%20Off") for u in POWER_URLS]
 
@@ -70,12 +140,12 @@ def load_state() -> Optional[dict]:
 
 
 def save_state() -> None:
-    """Persist current songs list and index to STATE_FILE atomically."""
+    """Persist current songs list, index, and skip counts to STATE_FILE atomically."""
     try:
-        payload = {"songs": songs, "current_index": current_song_index}
+        payload = {"songs": songs, "current_index": current_song_index, "skip_counts": skip_counts}
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
+            json.dump(payload, fh, indent=2)
         os.replace(tmp, STATE_FILE)
     except Exception:
         logger.exception("Failed to save state to %s", STATE_FILE)
@@ -180,21 +250,70 @@ def _start_playback(file_path: str) -> dict:
 
 
 def play_song(song_name: str) -> dict:
-    """Find an mp3 for the given song_name under the songs directory and play it.
+    """Find an audio file for the given song_name under configured songs folder and play it.
 
-    song_name is the display name like "Nirvana - Smells Like Teen Spirit" and
-    files are expected to be named like "Nirvana - Smells Like Teen Spirit.mp3".
+    song_name is the display name and files are expected to match the name.
     Returns the dict returned by _start_playback or an error dict.
     """
-    songs_dir = os.getenv("SONGS_DIR", os.path.join(os.getcwd(), "songs"))
-    # First try exact filename
-    exact = os.path.join(songs_dir, f"{song_name}.mp3")
-    if os.path.exists(exact):
-        return _start_playback(exact)
+    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    songs_dir = os.path.join(main_folder, "songs")
+    
+    # Try different audio extensions
+    audio_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg']
+    for ext in audio_extensions:
+        file_path = os.path.join(songs_dir, f"{song_name}{ext}")
+        if os.path.exists(file_path):
+            return _start_playback(file_path)
 
-    msg = f"song mp3 not found for '{song_name}' in {songs_dir}"
+    msg = f"song file not found for '{song_name}' in {songs_dir}"
     logger.info(msg)
     return {"played": False, "path": None, "error": msg}
+
+
+def play_clap_sound():
+    """Play clap sound without stopping current playback."""
+    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    clap_file = config.get("clap_file", "clap.wav")
+    clap_path = os.path.join(main_folder, clap_file)
+    if not os.path.exists(clap_path):
+        logger.warning("Clap sound not found: %s", clap_path)
+        return
+    
+    player = _which_player()
+    if not player:
+        logger.warning("No player available for clap sound")
+        return
+    
+    if player == "afplay":
+        args = [player, clap_path]
+    elif player == "ffplay":
+        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", clap_path]
+    elif player == "mpg123":
+        args = [player, clap_path]
+    elif player == "aplay":
+        args = [player, clap_path]
+    else:
+        args = [player, clap_path]
+    
+    try:
+        p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with clap_lock:
+            clap_processes.append(p)
+        logger.info("Playing clap sound")
+    except Exception:
+        logger.exception("Failed to play clap sound")
+
+
+def _stop_clap_sounds():
+    """Stop all clap sound processes."""
+    with clap_lock:
+        for p in clap_processes:
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception:
+                logger.exception("Failed to terminate clap process")
+        clap_processes.clear()
 
 
 def _call_power_endpoints(state: str) -> list:
@@ -222,45 +341,75 @@ def _call_power_endpoints(state: str) -> list:
     return results
 
 
+def _reset_system():
+    """Reset system: stop playback, stop clap sounds, filter and shuffle songs, power off."""
+    global playback_active, current_song_index
+    
+    # Stop playback and clap sounds
+    _stop_playback()
+    _stop_clap_sounds()
+    
+    with songs_lock:
+        playback_active = False
+        # Filter to lowest 80% by skip count and shuffle
+        if songs:
+            all_songs = songs.copy()
+            filtered_songs = filter_songs_by_skip_count(all_songs)
+            songs.clear()
+            songs.extend(filtered_songs)
+            random.shuffle(songs)
+            current_song_index = 0
+            logger.info("System reset: songs filtered and shuffled")
+    
+    # Power off (synchronously to ensure completion)
+    _call_power_endpoints("off")
+
+
 @app.on_event("startup")
 def startup_event():
-    """Set initial song at server startup (plays first song)."""
-    # Ensure we try to power everything off on startup. Run in a background
-    # thread so startup isn't blocked by slow/unavailable endpoints.
-    try:
-        threading.Thread(target=_call_power_endpoints, args=("off",), daemon=True).start()
-    except Exception:
-        # Protect startup from any unexpected threading issues; log and continue.
-        logger.exception("Failed to start background power-off thread on startup")
-    global current_song_index
-    # Try to load persisted state if available. If loading fails, fall back to
-    # the default shuffled songs list and start at index 0.
+    """Set initial song at server startup."""
+    global current_song_index, skip_counts
+    
+    # Load songs from folder
+    folder_songs = load_songs_from_folder()
+    
+    # Load skip counts from persisted state
     state = load_state()
+    if state and isinstance(state, dict):
+        loaded_skip_counts = state.get("skip_counts", {})
+        if isinstance(loaded_skip_counts, dict):
+            skip_counts = loaded_skip_counts
+    
+    # Load all songs into list temporarily
     with songs_lock:
-        if state and isinstance(state, dict):
-            loaded_songs = state.get("songs")
-            loaded_index = state.get("current_index")
-            if isinstance(loaded_songs, list) and loaded_songs:
-                # Replace the songs list with persisted order and validate index.
-                songs.clear()
-                songs.extend(loaded_songs)
-                if isinstance(loaded_index, int) and 0 <= loaded_index < len(songs):
-                    current_song_index = loaded_index
-                else:
-                    current_song_index = 0
-                logger.info("Loaded persisted state: playing initial song: %s", songs[current_song_index])
-                return
-
-        # Default fallback: ensure current index is within bounds and log it.
-        if songs:
-            current_song_index = 0
-            logger.info("Startup: playing initial song: %s", songs[current_song_index])
+        songs.clear()
+        songs.extend(folder_songs)
+        if not songs:
+            logger.warning("No songs found in ~/Documents/midburn/songs")
+            return
+    
+    # Reset system (stop playback, filter, shuffle, power off)
+    _reset_system()
 
 
 
 @app.on_event("shutdown")
 def shutdown_event():
     """Persist state on shutdown so restarts resume where we left off."""
+    global playback_active
+    
+    # Stop playback and power off
+    _stop_playback()
+    with songs_lock:
+        playback_active = False
+    
+    # Call power-off endpoints synchronously to ensure they complete before shutdown
+    try:
+        _call_power_endpoints("off")
+        logger.info("Power-off endpoints called on shutdown")
+    except Exception:
+        logger.exception("Failed to call power-off endpoints on shutdown")
+    
     # save_state handles its own exceptions and logs failures
     save_state()
 
@@ -290,17 +439,25 @@ def single_press():
     """SINGLE_PRESS: play first song and call power-on endpoints.
 
     Behavior:
-    - sets the current song to the first in the list (index 0)
-    - persists state
-    - triggers power-on endpoints (in background)
-    - starts playback of the first song
+    - If playback is active: play clap sound along with current song
+    - If playback is not active: start first song and call power-on endpoints
     """
-    global current_song_index
+    global current_song_index, playback_active, song_start_time
+    
     with songs_lock:
         if not songs:
             return {"action": "SINGLE_PRESS", "error": "no songs"}
+        
+        # If playback is already active, just play clap sound
+        if playback_active:
+            play_clap_sound()
+            return {"action": "SINGLE_PRESS", "clap": True, "song": songs[current_song_index]}
+        
+        # Otherwise start playback from first song
         current_song_index = 0
         song = songs[current_song_index]
+        playback_active = True
+        song_start_time = time.time()
 
     save_state()
 
@@ -320,12 +477,31 @@ def single_press():
 @app.post("/api/double_press")
 def double_press():
     """DOUBLE_PRESS: call external endpoint to go to next song."""
-    url = os.getenv("NEXT_SONG_URL", "http://192.168.1.183/next_song")
+    url = os.getenv("NEXT_SONG_URL", config.get("next_song_url", "http://192.168.1.183/next_song"))
+    
+    # Stop any clap sounds
+    _stop_clap_sounds()
+    
     # Advance to next song in the shuffled list
-    global current_song_index
+    global current_song_index, playback_active, song_start_time, skip_counts
+    
     with songs_lock:
+        if not songs:
+            return {"action": "DOUBLE_PRESS", "error": "no songs available"}
+        
+        # Check if current song was skipped
+        if playback_active and song_start_time is not None:
+            elapsed = time.time() - song_start_time
+            skip_threshold = config.get("skip_threshold_seconds", 20)
+            if elapsed < skip_threshold:
+                prev_song = songs[current_song_index]
+                skip_counts[prev_song] = skip_counts.get(prev_song, 0) + 1
+                logger.info("Song '%s' skipped after %.1f seconds (skip count: %d)", prev_song, elapsed, skip_counts[prev_song])
+        
         current_song_index = (current_song_index + 1) % len(songs)
         song = songs[current_song_index]
+        playback_active = True
+        song_start_time = time.time()
 
     # Persist the new index so restarts resume here.
     save_state()
@@ -339,34 +515,32 @@ def double_press():
         logger.exception("Error while trying to play song %s", song)
         play_res = {"played": False, "error": "playback exception"}
 
-    logger.info("DOUBLE_PRESS triggered, next song: %s, forwarding to %s", song, url)
-    res = _post_forward(url, json_payload={})
-    logger.info(
-        "DOUBLE_PRESS result: forwarded=%s status=%s error=%s",
-        res.get("forwarded"),
-        res.get("status"),
-        res.get("error"),
-    )
+    # logger.info("DOUBLE_PRESS triggered, next song: %s, forwarding to %s", song, url)
+    # res = _post_forward(url, json_payload={})
+    # logger.info(
+    #     "DOUBLE_PRESS result: forwarded=%s status=%s error=%s",
+    #     res.get("forwarded"),
+    #     res.get("status"),
+    #     res.get("error"),
+    # )
     # Return the song so the frontend can display it and include playback info
-    return {"action": "DOUBLE_PRESS", "song": song, "play": play_res, **res}
+    return {"action": "DOUBLE_PRESS", "song": song, "play": play_res}
 
 
 @app.post("/api/multi_press")
 def multi_press():
     """MULTI_PRESS: call external endpoint to show lights."""
-    url = os.getenv("SHOW_LIGHTS_URL", "http://192.168.1.183/show_lights")
+    url = os.getenv("SHOW_LIGHTS_URL", config.get("show_lights_url", "http://192.168.1.183/show_lights"))
     res = _post_forward(url, json_payload={})
     return {"action": "MULTI_PRESS", **res}
 
 
 @app.post("/api/long_press")
 def long_press():
-    """LONG_PRESS: stop playback and call power-off endpoints."""
-    # Stop playback immediately
-    _stop_playback()
-
-    # Call power-off endpoints in background and return immediately
-    threading.Thread(target=_call_power_endpoints, args=("off",), daemon=True).start()
+    """LONG_PRESS: stop playback, shuffle songs, and call power-off endpoints."""
+    # Reset system (stop playback, shuffle, power off)
+    _reset_system()
+    save_state()
     return {"action": "LONG_PRESS", "result": "power-off triggered"}
 
 
@@ -374,9 +548,89 @@ def long_press():
 def get_current_song():
     """Return the currently playing song and its index."""
     with songs_lock:
-        if not songs:
+        if not songs or not playback_active:
             return {"song": None, "index": None}
         return {"song": songs[current_song_index], "index": current_song_index}
+
+
+@app.post("/api/clear_skip_counts")
+def clear_skip_counts():
+    """Clear all skip counts."""
+    global skip_counts
+    with songs_lock:
+        skip_counts = {}
+    save_state()
+    logger.info("Skip counts cleared")
+    return {"action": "CLEAR_SKIP_COUNTS", "result": "success"}
+
+
+@app.get("/api/stats")
+def get_stats():
+    """Return statistics including skip counts, total songs, and excluded songs."""
+    # Get total number of songs from folder
+    folder_songs = load_songs_from_folder()
+    
+    # Get filtered songs (those that will be played)
+    filtered_songs = filter_songs_by_skip_count(folder_songs)
+    
+    # Find excluded songs
+    excluded_songs = [song for song in folder_songs if song not in filtered_songs]
+    excluded_with_counts = [(song, skip_counts.get(song, 0)) for song in excluded_songs]
+    excluded_with_counts.sort(key=lambda x: x[1], reverse=True)
+    
+    with songs_lock:
+        return {
+            "skip_counts": skip_counts.copy(),
+            "total_songs": len(folder_songs),
+            "excluded_songs": excluded_with_counts
+        }
+
+
+@app.get("/api/config")
+def get_config():
+    """Return the current configuration."""
+    return config
+
+
+@app.post("/api/upload_songs")
+async def upload_songs(files: list[UploadFile] = File(...)):
+    """Upload MP3 files to songs folder."""
+    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    songs_dir = os.path.join(main_folder, "songs")
+    
+    # Ensure songs directory exists
+    os.makedirs(songs_dir, exist_ok=True)
+    
+    uploaded_count = 0
+    for file in files:
+        if not file.filename.endswith('.mp3'):
+            logger.warning("Skipping non-MP3 file: %s", file.filename)
+            continue
+        
+        try:
+            file_path = os.path.join(songs_dir, file.filename)
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            uploaded_count += 1
+            logger.info("Uploaded song: %s", file.filename)
+        except Exception:
+            logger.exception("Failed to upload file: %s", file.filename)
+    
+    # Reload, filter and shuffle songs
+    if uploaded_count > 0:
+        global current_song_index
+        folder_songs = load_songs_from_folder()
+        with songs_lock:
+            filtered_songs = filter_songs_by_skip_count(folder_songs)
+            songs.clear()
+            songs.extend(filtered_songs)
+            random.shuffle(songs)
+            current_song_index = 0
+        save_state()
+        logger.info("Reloaded, filtered and shuffled songs after upload")
+    
+    return {"action": "UPLOAD_SONGS", "uploaded": uploaded_count}
 
 
 # Serve admin page at /admin (maps to static/admin.html)
@@ -386,6 +640,24 @@ def admin_page():
     if os.path.exists(admin_path):
         return FileResponse(admin_path, media_type="text/html")
     raise HTTPException(status_code=404, detail="admin page not found")
+
+
+# Serve stats page at /stats (maps to static/stats.html)
+@app.get("/stats")
+def stats_page():
+    stats_path = os.path.join(os.getcwd(), "static", "stats.html")
+    if os.path.exists(stats_path):
+        return FileResponse(stats_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="stats page not found")
+
+
+# Serve config page at /config (maps to static/config.html)
+@app.get("/config")
+def config_page():
+    config_path = os.path.join(os.getcwd(), "static", "config.html")
+    if os.path.exists(config_path):
+        return FileResponse(config_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="config page not found")
 
 
 # Serve the frontend from the `static` directory at the root path
