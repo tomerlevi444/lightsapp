@@ -1,0 +1,166 @@
+```html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lights App</title>
+  <style>
+  body { font-family: Arial, sans-serif; padding: 40px; }
+  .ctl { padding: 18px 28px; font-size: 18px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 160px; }
+  #doubleBtn { font-size: 20px; min-width: 220px; padding: 20px 36px; }
+  #status { margin-top: 20px; font-size: 20px; font-weight: 600; }
+  .ctl:active { transform: translateY(1px); }
+  #buttons { display:flex; gap:12px; flex-wrap:wrap; align-items:center }
+  </style>
+</head>
+<body>
+  <div id="buttons">
+    <button id="singleBtn" class="ctl">Single</button>
+    <button id="doubleBtn" class="ctl">Next Song</button>
+    <button id="multiBtn" class="ctl">Multi</button>
+    <button id="longBtn" class="ctl">Long</button>
+  </div>
+  <div id="status">Ready</div>
+
+  <script>
+    function setStatus(text, isError=false) {
+      const status = document.getElementById('status');
+      status.textContent = text;
+      status.style.color = isError ? 'crimson' : '';
+    }
+
+    async function postPress(path) {
+      setStatus('Sending...');
+      try {
+        const res = await fetch(path, { method: 'POST' });
+        const data = await res.json();
+        return data;
+      } catch (err) {
+        console.error('Request failed', err);
+        setStatus('Request error', true);
+        return null;
+      }
+    }
+
+    async function handleSingle() {
+      const data = await postPress('/api/single_press');
+      if (!data) return;
+      setStatus('SINGLE_PRESS: ' + (data.result || JSON.stringify(data)));
+    }
+
+    async function handleDouble() {
+      const data = await postPress('/api/double_press');
+      if (!data) return;
+      if (data.song) setStatus('Now playing: ' + data.song);
+      else if (data.forwarded) setStatus('DOUBLE_PRESS forwarded');
+      else setStatus('DOUBLE_PRESS result: ' + (data.error || JSON.stringify(data)), true);
+    }
+
+    async function handleMulti() {
+      const data = await postPress('/api/multi_press');
+      if (!data) return;
+      if (data.forwarded) setStatus('MULTI_PRESS forwarded');
+      else setStatus('MULTI_PRESS result: ' + (data.error || JSON.stringify(data)), !!data.error);
+    }
+
+    async function handleLong() {
+      const data = await postPress('/api/long_press');
+      if (!data) return;
+      if (data.forwarded) setStatus('LONG_PRESS forwarded');
+      else setStatus('LONG_PRESS result: ' + (data.error || JSON.stringify(data)), !!data.error);
+    }
+
+    document.getElementById('singleBtn').addEventListener('click', handleSingle);
+    document.getElementById('doubleBtn').addEventListener('click', handleDouble);
+    document.getElementById('multiBtn').addEventListener('click', handleMulti);
+    document.getElementById('longBtn').addEventListener('click', handleLong);
+
+    // Poll current song every 1 second so multiple clients see the same state
+    async function fetchCurrentSong() {
+      try {
+        const res = await fetch('/api/current_song');
+        const data = await res.json();
+        if (data.song) {
+          setStatus('Now playing: ' + data.song);
+        }
+      } catch (err) {
+        // ignore polling errors (keep previous state)
+        console.debug('Polling current song failed', err);
+      }
+    }
+
+    // Start polling immediately
+    fetchCurrentSong();
+    setInterval(fetchCurrentSong, 1000);
+  </script>
+</body>
+</html>
+
+```
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lights App</title>
+  <style>
+  body { font-family: Arial, sans-serif; padding: 40px; }
+  #nextBtn { padding: 22px 48px; font-size: 24px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 240px; }
+  #status { margin-top: 20px; font-size: 20px; font-weight: 600; }
+  #nextBtn:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <button id="nextBtn">Next Song</button>
+  <div id="status">Ready</div>
+
+  <script>
+    function setStatus(text, isError=false) {
+      const status = document.getElementById('status');
+      status.textContent = text;
+      status.style.color = isError ? 'crimson' : '';
+    }
+
+    async function requestNextSong() {
+      setStatus('Sending...');
+      try {
+        const res = await fetch('/api/double_press', { method: 'POST' });
+        const data = await res.json();
+        if (data.song) {
+          setStatus('Now playing: ' + data.song);
+        } else if (data.forwarded) {
+          setStatus('Next song requested (forwarded)');
+        } else if (data.status) {
+          setStatus('Next song requested (status: ' + data.status + ')');
+        } else {
+          setStatus('Next song requested (forward failed)', true);
+        }
+      } catch (err) {
+        console.error('Request failed', err);
+        setStatus('Request error', true);
+      }
+    }
+
+    document.getElementById('nextBtn').addEventListener('click', requestNextSong);
+
+    // Poll current song every 1 second so multiple clients see the same state
+    async function fetchCurrentSong() {
+      try {
+        const res = await fetch('/api/current_song');
+        const data = await res.json();
+        if (data.song) {
+          setStatus('Now playing: ' + data.song);
+        }
+      } catch (err) {
+        // ignore polling errors (keep previous state)
+        console.debug('Polling current song failed', err);
+      }
+    }
+
+    // Start polling immediately
+    fetchCurrentSong();
+    setInterval(fetchCurrentSong, 1000);
+  </script>
+</body>
+</html>
