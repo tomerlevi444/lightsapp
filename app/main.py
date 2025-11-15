@@ -210,6 +210,10 @@ playback_generation = 0
 multi_press_timer = None
 multi_press_lock = threading.Lock()
 
+# Smoke timer management
+smoke_timer = None
+smoke_lock = threading.Lock()
+
 # Clap playback processes
 clap_processes: list[subprocess.Popen] = []
 clap_lock = threading.Lock()
@@ -422,6 +426,10 @@ def _start_playback(file_path: str) -> dict:
                             current_song_index = (current_song_index + 1) % len(songs)
                     save_state()
                     logger.info("Playback finished; marked as inactive and advanced to next song")
+                    # Call long_press logic at end of song
+                    _cancel_multi_press_timer()
+                    _cancel_smoke_timer()
+                    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/idle"), daemon=True).start()
                     # Only call power endpoints if this playback wasn't cancelled
                     logger.info("Playback finished; calling power-off endpoints")
                     # call in background so watcher returns quickly
@@ -735,11 +743,17 @@ def single_press():
     # Call power-on endpoints in background (do not block request)
     threading.Thread(target=_call_power_endpoints, args=("on",), daemon=True).start()
     
-    # Cancel any pending multi-press timer
+    # Cancel any pending timers
     _cancel_multi_press_timer()
+    _cancel_smoke_timer()
     
     # Call stage ESP32 endpoint
     threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/show"), daemon=True).start()
+    
+    # Set smoke timer for 60 seconds
+    with smoke_lock:
+        smoke_timer = threading.Timer(60.0, lambda: _post_forward("http://stage-esp32.local/smoke"))
+        smoke_timer.start()
 
     # Play start clap and song simultaneously
     play_start_clap()
@@ -797,8 +811,9 @@ def double_press():
     # Reset flag after starting playback
     skip_next_claps = False
     
-    # Cancel any pending multi-press timer
+    # Cancel any pending timers
     _cancel_multi_press_timer()
+    _cancel_smoke_timer()
     
     # Call stage ESP32 endpoint only after successful action
     threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/skip"), daemon=True).start()
@@ -814,6 +829,14 @@ def _cancel_multi_press_timer():
         if multi_press_timer:
             multi_press_timer.cancel()
             multi_press_timer = None
+
+def _cancel_smoke_timer():
+    """Cancel pending smoke timer."""
+    global smoke_timer
+    with smoke_lock:
+        if smoke_timer:
+            smoke_timer.cancel()
+            smoke_timer = None
 
 @app.get("/api/multi_press")
 def multi_press():
@@ -831,8 +854,9 @@ def multi_press():
     
     play_middle_clap()
     
-    # Call stage ESP32 endpoint only when action triggers
+    # Call stage ESP32 endpoints
     threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/special"), daemon=True).start()
+    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/smoke"), daemon=True).start()
     
     # Set timer for second call after 10 seconds
     with multi_press_lock:
@@ -850,8 +874,9 @@ def long_press():
         if not playback_active:
             return {"action": "LONG_PRESS", "result": "already stopped"}
     
-    # Cancel any pending multi-press timer
+    # Cancel any pending timers
     _cancel_multi_press_timer()
+    _cancel_smoke_timer()
     
     # Call stage ESP32 endpoint
     threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/idle"), daemon=True).start()

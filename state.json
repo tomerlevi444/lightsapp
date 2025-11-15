@@ -1,11 +1,11 @@
 {
   "songs": [
-    "calls_incoming_ring_v2",
-    "Nirvana - Smells Like Teen Spirit",
-    "TLC - No Scrubs",
     "Natalia Jime\u0301nez - Creo en Mi",
-    "R.E.M. - Losing My Religion",
+    "calls_incoming_ring_v2",
+    "TLC - No Scrubs",
     "Britney Spears - ...Baby One More Time",
+    "Nirvana - Smells Like Teen Spirit",
+    "R.E.M. - Losing My Religion",
     "Oasis - Wonderwall"
   ],
   "current_index": 0,
@@ -20,16 +20,16 @@
     "calls_incoming_ring_v2": 3
   },
   "start_claps": [
-    "hand-clap-with-together-sound-effect-263698",
-    "pleased-crowdflac-14484"
+    "pleased-crowdflac-14484",
+    "hand-clap-with-together-sound-effect-263698"
   ],
   "middle_claps": [
-    "clap",
-    "crowd-cheer-and-applause-406644"
+    "crowd-cheer-and-applause-406644",
+    "clap"
   ],
   "end_claps": [
-    "clapping-from-a-street-concert-336402",
     "audience-clapping-03-99963",
+    "clapping-from-a-street-concert-336402",
     "clapping-44830"
   ],
   "current_start_clap_index": 0,
