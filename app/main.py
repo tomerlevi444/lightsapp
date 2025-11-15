@@ -34,6 +34,37 @@ def load_config():
         logger.warning("Failed to load config.json, using defaults")
         return {}
 
+def get_usb_path():
+    """Find first mounted USB device path."""
+    if sys.platform == "darwin":
+        volumes_dir = "/Volumes"
+        if os.path.exists(volumes_dir):
+            volumes = [os.path.join(volumes_dir, d) for d in os.listdir(volumes_dir) 
+                      if d not in ["Macintosh HD", "Preboot", "Recovery", "VM", "Data"]]
+            if volumes:
+                return volumes[0]
+    elif sys.platform.startswith("linux"):
+        media_dir = "/media"
+        if os.path.exists(media_dir):
+            for user_dir in os.listdir(media_dir):
+                user_path = os.path.join(media_dir, user_dir)
+                if os.path.isdir(user_path):
+                    devices = os.listdir(user_path)
+                    if devices:
+                        return os.path.join(user_path, devices[0])
+    return None
+
+def get_main_folder():
+    """Get main folder path, using USB if configured."""
+    if config.get("use_usb", False):
+        usb_path = get_usb_path()
+        if usb_path:
+            logger.info("Using USB device: %s", usb_path)
+            return usb_path
+        else:
+            logger.warning("USB mode enabled but no USB device found, falling back to local folder")
+    return os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+
 config = load_config()
 
 # Songs list - loaded from configured songs folder
@@ -41,7 +72,7 @@ songs = []
 
 def load_songs_from_folder():
     """Load song list from configured songs folder."""
-    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    main_folder = get_main_folder()
     songs_dir = os.path.join(main_folder, "songs")
     if not os.path.exists(songs_dir):
         logger.warning("Songs directory not found: %s", songs_dir)
@@ -275,7 +306,7 @@ def play_song(song_name: str) -> dict:
     song_name is the display name and files are expected to match the name.
     Returns the dict returned by _start_playback or an error dict.
     """
-    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    main_folder = get_main_folder()
     songs_dir = os.path.join(main_folder, "songs")
     
     # Try different audio extensions
@@ -292,7 +323,7 @@ def play_song(song_name: str) -> dict:
 
 def play_clap_sound():
     """Play clap sound without stopping current playback."""
-    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    main_folder = get_main_folder()
     clap_file = config.get("clap_file", "clap.wav")
     clap_path = os.path.join(main_folder, clap_file)
     if not os.path.exists(clap_path):
@@ -697,7 +728,7 @@ async def remove_power_host(request: dict):
 async def upload_songs(files: list[UploadFile] = File(...)):
     """Upload MP3 files to songs folder."""
     global current_song_index
-    main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+    main_folder = get_main_folder()
     songs_dir = os.path.join(main_folder, "songs")
     
     # Ensure songs directory exists
