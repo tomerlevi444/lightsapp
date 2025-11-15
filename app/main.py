@@ -201,7 +201,9 @@ POWER_OFF_URLS = []
 def reload_power_urls():
     """Reload power URLs from current config."""
     global POWER_URLS, POWER_OFF_URLS
-    power_host_prefix = config.get("power_host_prefix", "")
+    # Get prefix from local IP (e.g., "192.168.1.182" -> "192.168.1")
+    local_ip = config.get("local_ip", "127.0.0.1")
+    power_host_prefix = ".".join(local_ip.split(".")[:3])
     power_hosts_str = os.getenv("POWER_HOSTS", config.get("power_hosts", ""))
     power_ports_str = config.get("power_ports", "/cm?cmnd=Power%20On,/cm?cmnd=Power%20Off")
     power_ports = power_ports_str.split(",")

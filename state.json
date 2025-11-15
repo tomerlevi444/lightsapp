@@ -1,7 +1,12 @@
 {
   "songs": [
+    "Britney Spears - ...Baby One More Time",
+    "R.E.M. - Losing My Religion",
+    "Natalia Jime\u0301nez - Creo en Mi",
+    "Oasis - Wonderwall",
+    "Nirvana - Smells Like Teen Spirit",
     "TLC - No Scrubs",
-    "Oasis - Wonderwall"
+    "calls_incoming_ring_v2"
   ],
   "current_index": 0,
   "skip_counts": {
@@ -15,17 +20,17 @@
     "calls_incoming_ring_v2": 3
   },
   "start_claps": [
-    "pleased-crowdflac-14484",
-    "hand-clap-with-together-sound-effect-263698"
+    "hand-clap-with-together-sound-effect-263698",
+    "pleased-crowdflac-14484"
   ],
   "middle_claps": [
-    "clap",
-    "crowd-cheer-and-applause-406644"
+    "crowd-cheer-and-applause-406644",
+    "clap"
   ],
   "end_claps": [
     "clapping-from-a-street-concert-336402",
-    "clapping-44830",
-    "audience-clapping-03-99963"
+    "audience-clapping-03-99963",
+    "clapping-44830"
   ],
   "current_start_clap_index": 0,
   "current_middle_clap_index": 0,

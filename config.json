@@ -3,13 +3,12 @@
   "use_usb": false,
   "claps_folder": "claps",
   "playlists_folder": "playlists",
-  "power_host_prefix": "192.168.1",
-  "power_hosts": "",
+  "power_hosts": "103",
   "power_ports": "/cm?cmnd=Power%20On,/cm?cmnd=Power%20Off",
   "next_song_url": "http://192.168.1.183/next_song",
   "show_lights_url": "http://192.168.1.183/show_lights",
   "skip_threshold_seconds": 20,
   "skip_percentile": 0.8,
   "filter_unpopular_songs": false,
-  "local_ip": "192.168.1.182"
+  "local_ip": "192.168.1.101"
 }
