@@ -108,9 +108,15 @@ def filter_songs_by_skip_count(all_songs: list[str]) -> list[str]:
     
     Songs not in skip_counts have a score of 0.
     Includes songs at percentile and below, including all songs with the same score.
+    If filter_unpopular_songs is disabled, returns all songs.
     """
     if not all_songs:
         return []
+    
+    # If filtering is disabled, return all songs
+    if not config.get("filter_unpopular_songs", True):
+        logger.info("Song filtering disabled, using all %d songs", len(all_songs))
+        return all_songs
     
     # Create list of (song, skip_count) tuples
     song_scores = [(song, skip_counts.get(song, 0)) for song in all_songs]
@@ -286,13 +292,13 @@ def _start_playback(file_path: str) -> dict:
         logger.info("Playback skipped: %s", msg)
         return {"played": False, "path": file_path, "error": msg}
 
-    # Build args depending on player
+    # Build args depending on player with 50% volume
     if player == "afplay":
-        args = [player, file_path]
+        args = [player, "-v", "0.5", file_path]
     elif player == "ffplay":
-        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", file_path]
+        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", "50", file_path]
     elif player == "mpg123":
-        args = [player, file_path]
+        args = [player, "-f", "16384", file_path]  # 50% of 32768
     elif player == "aplay":
         args = [player, file_path]
     else:
@@ -324,10 +330,15 @@ def _start_playback(file_path: str) -> dict:
                     current_gen = playback_generation
                 logger.info("Playback process exited (gen=%s current_gen=%s)", gen, current_gen)
                 if gen == current_gen:
+                    # Mark playback as inactive
+                    global playback_active
+                    with songs_lock:
+                        playback_active = False
+                    logger.info("Playback finished; marked as inactive")
                     # Only call power endpoints if this playback wasn't cancelled
-                    logger.info("Playback finished; calling power-on endpoints")
+                    logger.info("Playback finished; calling power-off endpoints")
                     # call in background so watcher returns quickly
-                    threading.Thread(target=_call_power_endpoints, args=("on",), daemon=True).start()
+                    threading.Thread(target=_call_power_endpoints, args=("off",), daemon=True).start()
 
         threading.Thread(target=_watcher, args=(p, my_generation), daemon=True).start()
         return {"played": True, "path": file_path, "player": player}
@@ -538,27 +549,20 @@ def _post_forward(url: str, json_payload: dict | None = None, timeout: float = 3
         return {"forwarded": False, "status": None, "error": str(exc)}
 
 
-@app.post("/api/single_press")
+@app.get("/api/single_press")
 def single_press():
-    """SINGLE_PRESS: play first song and call power-on endpoints.
-
-    Behavior:
-    - If playback is active: play clap sound along with current song
-    - If playback is not active: start first song and call power-on endpoints
-    """
+    """SINGLE_PRESS: play current song and call power-on endpoints, only if not already playing."""
     global current_song_index, playback_active, song_start_time
     
     with songs_lock:
         if not songs:
             return {"action": "SINGLE_PRESS", "error": "no songs"}
         
-        # If playback is already active, just play clap sound
+        # Do nothing if already playing
         if playback_active:
-            play_clap_sound()
-            return {"action": "SINGLE_PRESS", "clap": True, "song": songs[current_song_index]}
+            return {"action": "SINGLE_PRESS", "error": "already playing"}
         
-        # Otherwise start playback from first song
-        current_song_index = 0
+        # Start playback from current index
         song = songs[current_song_index]
         playback_active = True
         song_start_time = time.time()
@@ -578,11 +582,9 @@ def single_press():
     return {"action": "SINGLE_PRESS", "song": song, "play": play_res}
 
 
-@app.post("/api/double_press")
+@app.get("/api/double_press")
 def double_press():
-    """DOUBLE_PRESS: call external endpoint to go to next song."""
-    url = os.getenv("NEXT_SONG_URL", config.get("next_song_url", "http://192.168.1.183/next_song"))
-    
+    """DOUBLE_PRESS: go to next song only if playback is active."""
     # Stop any clap sounds
     _stop_clap_sounds()
     
@@ -593,8 +595,12 @@ def double_press():
         if not songs:
             return {"action": "DOUBLE_PRESS", "error": "no songs available"}
         
+        # Only advance if playback is active
+        if not playback_active:
+            return {"action": "DOUBLE_PRESS", "error": "no song playing"}
+        
         # Check if current song was skipped
-        if playback_active and song_start_time is not None:
+        if song_start_time is not None:
             elapsed = time.time() - song_start_time
             skip_threshold = config.get("skip_threshold_seconds", 20)
             if elapsed < skip_threshold:
@@ -604,7 +610,6 @@ def double_press():
         
         current_song_index = (current_song_index + 1) % len(songs)
         song = songs[current_song_index]
-        playback_active = True
         song_start_time = time.time()
 
     # Persist the new index so restarts resume here.
@@ -619,27 +624,24 @@ def double_press():
         logger.exception("Error while trying to play song %s", song)
         play_res = {"played": False, "error": "playback exception"}
 
-    # logger.info("DOUBLE_PRESS triggered, next song: %s, forwarding to %s", song, url)
-    # res = _post_forward(url, json_payload={})
-    # logger.info(
-    #     "DOUBLE_PRESS result: forwarded=%s status=%s error=%s",
-    #     res.get("forwarded"),
-    #     res.get("status"),
-    #     res.get("error"),
-    # )
     # Return the song so the frontend can display it and include playback info
     return {"action": "DOUBLE_PRESS", "song": song, "play": play_res}
 
 
-@app.post("/api/multi_press")
+@app.get("/api/multi_press")
 def multi_press():
-    """MULTI_PRESS: call external endpoint to show lights."""
+    """MULTI_PRESS: play clap sound if song is playing, otherwise call external endpoint to show lights."""
+    with songs_lock:
+        if playback_active:
+            play_clap_sound()
+            return {"action": "MULTI_PRESS", "clap": True, "song": songs[current_song_index]}
+    
     url = os.getenv("SHOW_LIGHTS_URL", config.get("show_lights_url", "http://192.168.1.183/show_lights"))
     res = _post_forward(url, json_payload={})
     return {"action": "MULTI_PRESS", **res}
 
 
-@app.post("/api/long_press")
+@app.get("/api/long_press")
 def long_press():
     """LONG_PRESS: stop playback, shuffle songs, and call power-off endpoints."""
     # Reset system (stop playback, shuffle, power off)
@@ -650,11 +652,13 @@ def long_press():
 
 @app.get("/api/current_song")
 def get_current_song():
-    """Return the currently playing song and its index."""
+    """Return the currently playing song and its index, or next song if not playing."""
     with songs_lock:
-        if not songs or not playback_active:
-            return {"song": None, "index": None}
-        return {"song": songs[current_song_index], "index": current_song_index}
+        if not songs:
+            return {"song": None, "index": None, "next_song": None}
+        if not playback_active:
+            return {"song": None, "index": None, "next_song": songs[current_song_index]}
+        return {"song": songs[current_song_index], "index": current_song_index, "next_song": None}
 
 
 @app.post("/api/clear_skip_counts")
@@ -764,6 +768,31 @@ async def remove_power_host(request: dict):
         return {"result": "success", "host": host}
     else:
         return {"result": "error", "message": "Host not found"}
+
+
+@app.post("/api/toggle_filter")
+async def toggle_filter():
+    """Toggle filter_unpopular_songs setting and reshuffle songs."""
+    global current_song_index
+    
+    # Toggle the setting
+    current_value = config.get("filter_unpopular_songs", True)
+    config["filter_unpopular_songs"] = not current_value
+    save_config()
+    
+    # Reload, filter and shuffle songs
+    folder_songs = load_songs_from_folder()
+    with songs_lock:
+        filtered_songs = filter_songs_by_skip_count(folder_songs)
+        songs.clear()
+        songs.extend(filtered_songs)
+        random.shuffle(songs)
+        current_song_index = 0
+    save_state()
+    
+    new_value = config.get("filter_unpopular_songs")
+    logger.info("Filter unpopular songs: %s", new_value)
+    return {"action": "TOGGLE_FILTER", "enabled": new_value}
 
 
 @app.post("/api/upload_songs")

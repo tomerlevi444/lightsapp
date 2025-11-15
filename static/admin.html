@@ -32,6 +32,7 @@
     <button id="longBtn" class="ctl">Long</button>
     <div class="separator"></div>
     <button id="clearHistoryBtn" class="ctl">Clear Playlist History</button>
+    <button id="toggleFilterBtn" class="ctl">Filter Unpopular Songs: ON</button>
     <button id="addSongsBtn" class="ctl">Add Songs</button>
     <button id="addPlaylistBtn" class="ctl">Add Playlist</button>
     <div class="separator"></div>
@@ -58,9 +59,9 @@
       status.style.color = isError ? 'crimson' : '';
     }
 
-    async function postPress(path) {
+    async function getPress(path) {
       try {
-        const res = await fetch(path, { method: 'POST' });
+        const res = await fetch(path);
         const data = await res.json();
         return data;
       } catch (err) {
@@ -70,25 +71,31 @@
     }
 
     async function handleSingle() {
-      await postPress('/api/single_press');
+      await getPress('/api/single_press');
     }
 
     async function handleDouble() {
-      await postPress('/api/double_press');
+      await getPress('/api/double_press');
     }
 
     async function handleMulti() {
-      await postPress('/api/multi_press');
+      await getPress('/api/multi_press');
     }
 
     async function handleLong() {
-      await postPress('/api/long_press');
+      await getPress('/api/long_press');
     }
 
     async function handleClearHistory() {
       if (confirm('Are you sure you want to clear the playlist history?')) {
-        await postPress('/api/clear_skip_counts');
-        alert('Playlist history cleared');
+        try {
+          const res = await fetch('/api/clear_skip_counts', { method: 'POST' });
+          const data = await res.json();
+          alert('Playlist history cleared');
+        } catch (err) {
+          console.error('Failed to clear history', err);
+          alert('Error clearing history');
+        }
       }
     }
 
@@ -191,11 +198,27 @@
       }
     }
 
+    async function handleToggleFilter() {
+      try {
+        const res = await fetch('/api/toggle_filter', { method: 'POST' });
+        const data = await res.json();
+        if (data.enabled !== undefined) {
+          const btn = document.getElementById('toggleFilterBtn');
+          btn.textContent = `Filter Unpopular Songs: ${data.enabled ? 'ON' : 'OFF'}`;
+          alert(`Filter unpopular songs ${data.enabled ? 'enabled' : 'disabled'}. Songs reshuffled.`);
+        }
+      } catch (err) {
+        console.error('Failed to toggle filter', err);
+        alert('Error toggling filter');
+      }
+    }
+
     document.getElementById('singleBtn').addEventListener('click', handleSingle);
     document.getElementById('doubleBtn').addEventListener('click', handleDouble);
     document.getElementById('multiBtn').addEventListener('click', handleMulti);
     document.getElementById('longBtn').addEventListener('click', handleLong);
     document.getElementById('clearHistoryBtn').addEventListener('click', handleClearHistory);
+    document.getElementById('toggleFilterBtn').addEventListener('click', handleToggleFilter);
     document.getElementById('addSongsBtn').addEventListener('click', handleAddSongs);
     document.getElementById('addPlaylistBtn').addEventListener('click', handleAddPlaylist);
     document.getElementById('addPowerHostBtn').addEventListener('click', handleAddPowerHost);
@@ -209,6 +232,8 @@
         const data = await res.json();
         if (data.song) {
           setStatus('Now playing: ' + data.song);
+        } else if (data.next_song) {
+          setStatus('Ready (Next song is ' + data.next_song + ')');
         } else {
           setStatus('Ready');
         }
@@ -254,8 +279,22 @@
 
     window.openPlaylist = openPlaylist;
 
+    // Update filter button state
+    async function updateFilterButton() {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        const btn = document.getElementById('toggleFilterBtn');
+        const enabled = data.filter_unpopular_songs !== false;
+        btn.textContent = `Filter Unpopular Songs: ${enabled ? 'ON' : 'OFF'}`;
+      } catch (err) {
+        console.error('Failed to fetch filter state', err);
+      }
+    }
+
     fetchIPAddress();
     fetchPlaylists();
+    updateFilterButton();
     fetchCurrentSong();
     setInterval(fetchCurrentSong, 1000)
   </script>

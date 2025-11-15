@@ -23,6 +23,7 @@
   </head>
   <body>
     <div id="status">Ready</div>
+    <button id="playBtn" class="hidden">Play Song</button>
     <button id="nextBtn">Next Song</button>
     <a class="admin" href="/admin">Admin Controls</a>
 
@@ -33,20 +34,14 @@
         status.style.color = isError ? 'crimson' : '';
       }
 
-      async function requestNextSong() {
+      async function requestPlaySong() {
         try {
-          const res = await fetch('/api/double_press', { method: 'POST' });
+          const res = await fetch('/api/single_press');
           const data = await res.json();
-          const btn = document.getElementById('nextBtn');
           if (data.song) {
             setStatus('Now playing: ' + data.song);
-            btn.classList.remove('hidden');
-          } else if (data.forwarded) {
-            setStatus('Next song requested (forwarded)');
-          } else if (data.status) {
-            setStatus('Next song requested (status: ' + data.status + ')');
-          } else {
-            setStatus('Next song requested (forward failed)', true);
+          } else if (data.error) {
+            setStatus('Error: ' + data.error, true);
           }
         } catch (err) {
           console.error('Request failed', err);
@@ -54,6 +49,26 @@
         }
       }
 
+      async function requestNextSong() {
+        try {
+          const res = await fetch('/api/double_press');
+          const data = await res.json();
+          const btn = document.getElementById('nextBtn');
+          if (data.song) {
+            setStatus('Now playing: ' + data.song);
+            btn.classList.remove('hidden');
+          } else if (data.error) {
+            setStatus('Error: ' + data.error, true);
+          } else {
+            setStatus('Next song requested');
+          }
+        } catch (err) {
+          console.error('Request failed', err);
+          setStatus('Request error', true);
+        }
+      }
+
+      document.getElementById('playBtn').addEventListener('click', requestPlaySong);
       document.getElementById('nextBtn').addEventListener('click', requestNextSong);
 
       // Poll current song every 1 second so multiple clients see the same state
@@ -61,13 +76,16 @@
         try {
           const res = await fetch('/api/current_song');
           const data = await res.json();
-          const btn = document.getElementById('nextBtn');
+          const playBtn = document.getElementById('playBtn');
+          const nextBtn = document.getElementById('nextBtn');
           if (data.song) {
             setStatus('Now playing: ' + data.song);
-            btn.classList.remove('hidden');
+            playBtn.classList.add('hidden');
+            nextBtn.classList.remove('hidden');
           } else {
             setStatus('Ready');
-            btn.classList.add('hidden');
+            playBtn.classList.remove('hidden');
+            nextBtn.classList.add('hidden');
           }
         } catch (err) {
           // ignore polling errors (keep previous state)

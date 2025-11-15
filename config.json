@@ -3,11 +3,12 @@
   "use_usb": false,
   "clap_file": "clap.wav",
   "power_host_prefix": "192.168.1",
-  "power_hosts": "104",
+  "power_hosts": "",
   "power_ports": "/cm?cmnd=Power%20On,/cm?cmnd=Power%20Off",
   "next_song_url": "http://192.168.1.183/next_song",
   "show_lights_url": "http://192.168.1.183/show_lights",
   "skip_threshold_seconds": 20,
   "skip_percentile": 0.8,
-  "local_ip": "192.168.1.101"
+  "filter_unpopular_songs": true,
+  "local_ip": "100.64.0.1"
 }
