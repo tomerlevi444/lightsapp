@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Playlist</title>
+  <style>
+  body { font-family: Arial, sans-serif; padding: 40px; }
+  .ctl { padding: 18px 28px; font-size: 18px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 160px; }
+  .ctl:active { transform: translateY(1px); }
+  a.back { display:inline-block; margin-bottom:18px; }
+  h1 { margin-bottom: 20px; }
+  #songsList { margin-top: 20px; }
+  .song-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+  .song-name { flex: 1; }
+  .song-controls { display: flex; gap: 8px; }
+  .move-btn { padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; background: #fff; cursor: pointer; border-radius: 4px; }
+  .move-btn:active { transform: translateY(1px); }
+  #addSongBtn { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/admin">← Admin</a>
+  <h1 id="playlistTitle">Playlist</h1>
+  <button id="addSongBtn" class="ctl">Add Song</button>
+  <div id="songsList"></div>
+  <input type="file" id="fileInput" accept=".mp3" multiple style="display:none">
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const playlistName = urlParams.get('name');
+
+    if (!playlistName) {
+      alert('No playlist specified');
+      window.location.href = '/admin';
+    }
+
+    document.getElementById('playlistTitle').textContent = `Playlist: ${playlistName}`;
+
+    async function loadSongs() {
+      try {
+        const res = await fetch(`/api/playlist/${encodeURIComponent(playlistName)}`);
+        const data = await res.json();
+        
+        const songsList = document.getElementById('songsList');
+        if (data.songs.length === 0) {
+          songsList.innerHTML = '<p>No songs in this playlist yet.</p>';
+        } else {
+          songsList.innerHTML = data.songs.map((song, idx) => 
+            `<div class="song-item">
+              <span class="song-name">${song}</span>
+              <div class="song-controls">
+                <button class="move-btn" onclick="moveSong('${song}', 'up')" ${idx === 0 ? 'disabled' : ''}>↑</button>
+                <button class="move-btn" onclick="moveSong('${song}', 'down')" ${idx === data.songs.length - 1 ? 'disabled' : ''}>↓</button>
+              </div>
+            </div>`
+          ).join('');
+        }
+      } catch (err) {
+        console.error('Failed to load songs', err);
+        alert('Failed to load playlist');
+      }
+    }
+
+    async function moveSong(song, direction) {
+      try {
+        const res = await fetch(`/api/playlist/${encodeURIComponent(playlistName)}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ song, direction })
+        });
+        const data = await res.json();
+        if (data.result === 'success') {
+          loadSongs();
+        } else {
+          alert(data.message || 'Failed to move song');
+        }
+      } catch (err) {
+        console.error('Failed to move song', err);
+        alert('Error moving song');
+      }
+    }
+
+    function handleAddSong() {
+      document.getElementById('fileInput').click();
+    }
+
+    async function handleFileUpload(event) {
+      const files = event.target.files;
+      if (files.length === 0) return;
+
+      const formData = new FormData();
+      for (let file of files) {
+        formData.append('files', file);
+      }
+
+      try {
+        const res = await fetch(`/api/playlist/${encodeURIComponent(playlistName)}/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data.uploaded) {
+          alert(`Successfully uploaded ${data.uploaded} song(s)`);
+          loadSongs();
+        } else {
+          alert('Upload failed');
+        }
+      } catch (err) {
+        console.error('Upload failed', err);
+        alert('Upload error');
+      }
+      event.target.value = '';
+    }
+
+    document.getElementById('addSongBtn').addEventListener('click', handleAddSong);
+    document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+    
+    // Make moveSong available globally
+    window.moveSong = moveSong;
+
+    loadSongs();
+  </script>
+</body>
+</html>

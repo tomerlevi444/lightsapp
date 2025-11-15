@@ -19,7 +19,12 @@
   <a class="back" href="/">← Home</a>
   <a class="back" href="/stats" style="margin-left: 20px;">Statistics</a>
   <a class="back" href="/config" style="margin-left: 20px;">Config</a>
+  <div id="ipAddress" style="margin-bottom: 10px; font-size: 16px; color: #666;"></div>
   <div id="status">Ready</div>
+  <div id="playlistsSection" style="margin: 20px 0;">
+    <h3>Playlists</h3>
+    <div id="playlistsList" style="display:flex; gap:12px; flex-wrap:wrap;"></div>
+  </div>
   <div id="buttons">
     <button id="singleBtn" class="ctl">Single</button>
     <button id="doubleBtn" class="ctl">Double</button>
@@ -28,6 +33,7 @@
     <div class="separator"></div>
     <button id="clearHistoryBtn" class="ctl">Clear Playlist History</button>
     <button id="addSongsBtn" class="ctl">Add Songs</button>
+    <button id="addPlaylistBtn" class="ctl">Add Playlist</button>
     <div class="separator"></div>
     <button id="addPowerHostBtn" class="ctl">Add Power Host</button>
     <button id="removePowerHostBtn" class="ctl">Remove Power Host</button>
@@ -162,12 +168,36 @@
       }
     }
 
+    async function handleAddPlaylist() {
+      const name = prompt('Enter playlist name:');
+      if (name) {
+        try {
+          const res = await fetch('/api/create_playlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+          });
+          const data = await res.json();
+          if (data.result === 'success') {
+            alert(`Playlist "${name}" created successfully`);
+            window.location.href = `/playlist?name=${encodeURIComponent(name)}`;
+          } else {
+            alert(data.message || 'Failed to create playlist');
+          }
+        } catch (err) {
+          console.error('Failed to create playlist', err);
+          alert('Error creating playlist');
+        }
+      }
+    }
+
     document.getElementById('singleBtn').addEventListener('click', handleSingle);
     document.getElementById('doubleBtn').addEventListener('click', handleDouble);
     document.getElementById('multiBtn').addEventListener('click', handleMulti);
     document.getElementById('longBtn').addEventListener('click', handleLong);
     document.getElementById('clearHistoryBtn').addEventListener('click', handleClearHistory);
     document.getElementById('addSongsBtn').addEventListener('click', handleAddSongs);
+    document.getElementById('addPlaylistBtn').addEventListener('click', handleAddPlaylist);
     document.getElementById('addPowerHostBtn').addEventListener('click', handleAddPowerHost);
     document.getElementById('removePowerHostBtn').addEventListener('click', handleRemovePowerHost);
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
@@ -187,6 +217,45 @@
       }
     }
 
+    // Fetch and display IP address
+    async function fetchIPAddress() {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        if (data.local_ip) {
+          document.getElementById('ipAddress').textContent = `Local IP: ${data.local_ip}`;
+        }
+      } catch (err) {
+        console.error('Failed to fetch IP address', err);
+      }
+    }
+
+    // Fetch and display playlists
+    async function fetchPlaylists() {
+      try {
+        const res = await fetch('/api/playlists');
+        const data = await res.json();
+        const playlistsList = document.getElementById('playlistsList');
+        if (data.playlists && data.playlists.length > 0) {
+          playlistsList.innerHTML = data.playlists.map(playlist => 
+            `<button class="ctl" onclick="openPlaylist('${playlist}')">${playlist}</button>`
+          ).join('');
+        } else {
+          playlistsList.innerHTML = '<p style="color: #999;">No playlists yet</p>';
+        }
+      } catch (err) {
+        console.error('Failed to fetch playlists', err);
+      }
+    }
+
+    function openPlaylist(name) {
+      window.location.href = `/playlist?name=${encodeURIComponent(name)}`;
+    }
+
+    window.openPlaylist = openPlaylist;
+
+    fetchIPAddress();
+    fetchPlaylists();
     fetchCurrentSong();
     setInterval(fetchCurrentSong, 1000)
   </script>

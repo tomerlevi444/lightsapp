@@ -14,6 +14,7 @@ import shutil
 import glob
 from pathlib import Path
 import time
+import socket
 
 # Configure basic logging so INFO/ERROR messages are visible on the console by default.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -64,6 +65,17 @@ def get_main_folder():
         else:
             logger.warning("USB mode enabled but no USB device found, falling back to local folder")
     return os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
+
+def get_local_ip():
+    """Get local IP address in LAN."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 config = load_config()
 
@@ -173,6 +185,7 @@ reload_power_urls()
 # easy to inspect during development. If you prefer another location, set
 # STATE_FILE env var to override.
 STATE_FILE = os.getenv("STATE_FILE", os.path.join(os.getcwd(), "state.json"))
+PLAYLISTS_FILE = os.path.join(os.getcwd(), "playlists.json")
 
 
 def load_state() -> Optional[dict]:
@@ -200,6 +213,29 @@ def save_state() -> None:
         os.replace(tmp, STATE_FILE)
     except Exception:
         logger.exception("Failed to save state to %s", STATE_FILE)
+
+
+def load_playlists() -> dict:
+    """Load playlists configuration from PLAYLISTS_FILE."""
+    if not os.path.exists(PLAYLISTS_FILE):
+        return {}
+    try:
+        with open(PLAYLISTS_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        logger.exception("Failed to load playlists from %s", PLAYLISTS_FILE)
+        return {}
+
+
+def save_playlists(playlists_data: dict) -> None:
+    """Save playlists configuration to PLAYLISTS_FILE."""
+    try:
+        tmp = PLAYLISTS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(playlists_data, fh, indent=2)
+        os.replace(tmp, PLAYLISTS_FILE)
+    except Exception:
+        logger.exception("Failed to save playlists to %s", PLAYLISTS_FILE)
 
 
 def _which_player() -> Optional[str]:
@@ -431,6 +467,12 @@ def _reset_system():
 def startup_event():
     """Set initial song at server startup."""
     global current_song_index, skip_counts
+    
+    # Detect and save local IP address
+    local_ip = get_local_ip()
+    config["local_ip"] = local_ip
+    save_config()
+    logger.info("Local IP address: %s", local_ip)
     
     # Load songs from folder
     folder_songs = load_songs_from_folder()
@@ -764,6 +806,150 @@ async def upload_songs(files: list[UploadFile] = File(...)):
     return {"action": "UPLOAD_SONGS", "uploaded": uploaded_count}
 
 
+@app.post("/api/create_playlist")
+async def create_playlist(request: dict):
+    """Create a new playlist folder."""
+    playlist_name = request.get("name", "").strip()
+    if not playlist_name:
+        return {"result": "error", "message": "Playlist name required"}
+    
+    main_folder = get_main_folder()
+    playlist_path = os.path.join(main_folder, playlist_name)
+    
+    if os.path.exists(playlist_path):
+        return {"result": "error", "message": "Playlist already exists"}
+    
+    try:
+        os.makedirs(playlist_path, exist_ok=True)
+        logger.info("Created playlist: %s", playlist_name)
+        return {"result": "success", "name": playlist_name}
+    except Exception:
+        logger.exception("Failed to create playlist: %s", playlist_name)
+        return {"result": "error", "message": "Failed to create playlist"}
+
+
+@app.get("/api/playlists")
+def get_playlists():
+    """Get list of all playlists."""
+    main_folder = get_main_folder()
+    if not os.path.exists(main_folder):
+        return {"playlists": []}
+    
+    playlists = []
+    for item in os.listdir(main_folder):
+        item_path = os.path.join(main_folder, item)
+        if os.path.isdir(item_path) and item != "songs":
+            playlists.append(item)
+    
+    return {"playlists": sorted(playlists)}
+
+
+@app.get("/api/playlist/{playlist_name}")
+def get_playlist_songs(playlist_name: str):
+    """Get songs in a playlist in order."""
+    main_folder = get_main_folder()
+    playlist_path = os.path.join(main_folder, playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    
+    # Load playlist order from playlists.json
+    playlists_data = load_playlists()
+    ordered_songs = playlists_data.get(playlist_name, [])
+    
+    # Get all songs from folder
+    audio_extensions = ['*.mp3', '*.wav', '*.m4a', '*.flac', '*.ogg']
+    song_files = []
+    for ext in audio_extensions:
+        song_files.extend(glob.glob(os.path.join(playlist_path, ext)))
+    
+    all_songs = set(os.path.splitext(os.path.basename(f))[0] for f in song_files)
+    
+    # Add any new songs not in order list
+    for song in all_songs:
+        if song not in ordered_songs:
+            ordered_songs.append(song)
+    
+    # Remove songs that no longer exist
+    ordered_songs = [s for s in ordered_songs if s in all_songs]
+    
+    # Save updated order
+    playlists_data[playlist_name] = ordered_songs
+    save_playlists(playlists_data)
+    
+    return {"playlist": playlist_name, "songs": ordered_songs}
+
+
+@app.post("/api/playlist/{playlist_name}/upload")
+async def upload_to_playlist(playlist_name: str, files: list[UploadFile] = File(...)):
+    """Upload songs to a playlist."""
+    main_folder = get_main_folder()
+    playlist_path = os.path.join(main_folder, playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    
+    uploaded_count = 0
+    new_songs = []
+    for file in files:
+        if not file.filename.endswith('.mp3'):
+            logger.warning("Skipping non-MP3 file: %s", file.filename)
+            continue
+        
+        try:
+            file_path = os.path.join(playlist_path, file.filename)
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            uploaded_count += 1
+            new_songs.append(os.path.splitext(file.filename)[0])
+            logger.info("Uploaded song to playlist %s: %s", playlist_name, file.filename)
+        except Exception:
+            logger.exception("Failed to upload file: %s", file.filename)
+    
+    # Add new songs to end of playlist order
+    if new_songs:
+        playlists_data = load_playlists()
+        ordered_songs = playlists_data.get(playlist_name, [])
+        for song in new_songs:
+            if song not in ordered_songs:
+                ordered_songs.append(song)
+        playlists_data[playlist_name] = ordered_songs
+        save_playlists(playlists_data)
+    
+    return {"action": "UPLOAD_TO_PLAYLIST", "uploaded": uploaded_count}
+
+
+@app.post("/api/playlist/{playlist_name}/move")
+async def move_song_in_playlist(playlist_name: str, request: dict):
+    """Move a song up or down in playlist order."""
+    song = request.get("song", "")
+    direction = request.get("direction", "")
+    
+    if not song or direction not in ["up", "down"]:
+        return {"result": "error", "message": "Invalid parameters"}
+    
+    playlists_data = load_playlists()
+    ordered_songs = playlists_data.get(playlist_name, [])
+    
+    if song not in ordered_songs:
+        return {"result": "error", "message": "Song not found"}
+    
+    idx = ordered_songs.index(song)
+    
+    if direction == "up" and idx > 0:
+        ordered_songs[idx], ordered_songs[idx - 1] = ordered_songs[idx - 1], ordered_songs[idx]
+    elif direction == "down" and idx < len(ordered_songs) - 1:
+        ordered_songs[idx], ordered_songs[idx + 1] = ordered_songs[idx + 1], ordered_songs[idx]
+    else:
+        return {"result": "error", "message": "Cannot move in that direction"}
+    
+    playlists_data[playlist_name] = ordered_songs
+    save_playlists(playlists_data)
+    
+    return {"result": "success", "songs": ordered_songs}
+
+
 # Serve admin page at /admin (maps to static/admin.html)
 @app.get("/admin")
 def admin_page():
@@ -789,6 +975,15 @@ def config_page():
     if os.path.exists(config_path):
         return FileResponse(config_path, media_type="text/html")
     raise HTTPException(status_code=404, detail="config page not found")
+
+
+# Serve playlist page at /playlist (maps to static/playlist.html)
+@app.get("/playlist")
+def playlist_page():
+    playlist_path = os.path.join(os.getcwd(), "static", "playlist.html")
+    if os.path.exists(playlist_path):
+        return FileResponse(playlist_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="playlist page not found")
 
 
 # Serve the frontend from the `static` directory at the root path
