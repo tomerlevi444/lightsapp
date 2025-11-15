@@ -8,7 +8,7 @@
     "TLC - No Scrubs",
     "calls_incoming_ring_v2"
   ],
-  "current_index": 0,
+  "current_index": 1,
   "skip_counts": {
     "R.E.M. - Losing My Religion": 19,
     "Spice Girls - Wannabe": 10,
@@ -34,5 +34,5 @@
   ],
   "current_start_clap_index": 0,
   "current_middle_clap_index": 0,
-  "current_end_clap_index": 0
+  "current_end_clap_index": 1
 }

@@ -35,16 +35,15 @@ def load_config():
         logger.warning("Failed to load config.json, using defaults")
         return {}
 
-def get_usb_path():
-    """Find first mounted USB device path."""
-    if sys.platform == "darwin":
-        volumes_dir = "/Volumes"
-        if os.path.exists(volumes_dir):
-            volumes = [os.path.join(volumes_dir, d) for d in os.listdir(volumes_dir) 
-                      if d not in ["Macintosh HD", "Preboot", "Recovery", "VM", "Data"]]
-            if volumes:
-                return volumes[0]
-    elif sys.platform.startswith("linux"):
+def get_sdcard_path():
+    """Find SD card mount path on Raspberry Pi."""
+    if sys.platform.startswith("linux"):
+        # Check common Raspberry Pi SD card mount points
+        sdcard_paths = ["/mnt/sdcard", "/media/sdcard"]
+        for path in sdcard_paths:
+            if os.path.exists(path) and os.path.ismount(path):
+                return path
+        # Check /media for any mounted device
         media_dir = "/media"
         if os.path.exists(media_dir):
             for user_dir in os.listdir(media_dir):
@@ -56,14 +55,14 @@ def get_usb_path():
     return None
 
 def get_main_folder():
-    """Get main folder path, using USB if configured."""
-    if config.get("use_usb", False):
-        usb_path = get_usb_path()
-        if usb_path:
-            logger.info("Using USB device: %s", usb_path)
-            return usb_path
+    """Get main folder path, using SD card if configured."""
+    if config.get("use_sdcard", False):
+        sdcard_path = get_sdcard_path()
+        if sdcard_path:
+            logger.info("Using SD card: %s", sdcard_path)
+            return sdcard_path
         else:
-            logger.warning("USB mode enabled but no USB device found, falling back to local folder")
+            logger.warning("SD card mode enabled but no SD card found, falling back to local folder")
     return os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
 
 def get_local_ip():

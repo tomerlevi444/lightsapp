@@ -1,6 +1,6 @@
 {
   "main_folder": "~/Documents/midburn",
-  "use_usb": false,
+  "use_sdcard": false,
   "claps_folder": "claps",
   "playlists_folder": "playlists",
   "power_hosts": "103",
