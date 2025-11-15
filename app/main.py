@@ -206,6 +206,10 @@ playback_lock = threading.Lock()
 # generation counter to cancel watchers when playback is stopped
 playback_generation = 0
 
+# Multi-press timer management
+multi_press_timer = None
+multi_press_lock = threading.Lock()
+
 # Clap playback processes
 clap_processes: list[subprocess.Popen] = []
 clap_lock = threading.Lock()
@@ -354,15 +358,15 @@ def _start_playback(file_path: str) -> dict:
         logger.info("Playback skipped: %s", msg)
         return {"played": False, "path": file_path, "error": msg}
 
-    # Build args depending on player with 50% volume
+    # Build args depending on player with 80% volume
     if player == "afplay":
-        args = [player, "-v", "0.5", file_path]
+        args = [player, "-v", "0.8", file_path]
     elif player == "ffplay":
-        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", "50", file_path]
+        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", "80", file_path]
     elif player == "mpg123":
-        args = [player, "-f", "16384", file_path]  # 50% of 32768
+        args = [player, "-f", "26214", file_path]  # 80% of 32768
     elif player == "omxplayer":
-        args = [player, "--vol", "-1000", file_path]  # Raspberry Pi player
+        args = [player, "--vol", "-600", file_path]  # Raspberry Pi player
     elif player == "aplay":
         args = [player, file_path]
     else:
@@ -392,21 +396,9 @@ def _start_playback(file_path: str) -> dict:
         # the post-playback actions (calls power endpoints). It only runs if
         # the generation still matches (so cancelled/stopped play won't fire).
         def _watcher(proc, gen):
-            end_clap_played = False
             try:
-                # Monitor process and play end clap 10 seconds before it ends
-                while proc.poll() is None:
-                    time.sleep(1)
-                    # Simple heuristic: play end clap after reasonable time
-                    # In practice, you'd need song duration info for precise timing
-                    if not end_clap_played and not skip_next_claps:
-                        # For now, play end clap after 30 seconds (adjust as needed)
-                        if time.time() - song_start_time > 30:
-                            with playback_lock:
-                                current_gen = playback_generation
-                            if gen == current_gen:
-                                play_end_clap()
-                                end_clap_played = True
+                # Wait for process to finish
+                proc.wait()
                 
                 # Process has exited, check for errors
                 stdout, stderr = proc.communicate()
@@ -419,8 +411,11 @@ def _start_playback(file_path: str) -> dict:
                     current_gen = playback_generation
                 logger.info("Playback process exited (gen=%s current_gen=%s)", gen, current_gen)
                 if gen == current_gen:
+                    # Play end clap only if not skipped
+                    global playback_active, current_song_index, skip_next_claps
+                    if not skip_next_claps:
+                        play_end_clap()
                     # Mark playback as inactive and advance to next song
-                    global playback_active, current_song_index
                     with songs_lock:
                         playback_active = False
                         if songs:
@@ -739,6 +734,12 @@ def single_press():
 
     # Call power-on endpoints in background (do not block request)
     threading.Thread(target=_call_power_endpoints, args=("on",), daemon=True).start()
+    
+    # Cancel any pending multi-press timer
+    _cancel_multi_press_timer()
+    
+    # Call stage ESP32 endpoint
+    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/show"), daemon=True).start()
 
     # Play start clap and song simultaneously
     play_start_clap()
@@ -795,19 +796,50 @@ def double_press():
     
     # Reset flag after starting playback
     skip_next_claps = False
+    
+    # Cancel any pending multi-press timer
+    _cancel_multi_press_timer()
+    
+    # Call stage ESP32 endpoint only after successful action
+    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/skip"), daemon=True).start()
 
     # Return the song so the frontend can display it and include playback info
     return {"action": "DOUBLE_PRESS", "song": song, "play": {"played": True}}
 
 
+def _cancel_multi_press_timer():
+    """Cancel pending multi-press timer."""
+    global multi_press_timer
+    with multi_press_lock:
+        if multi_press_timer:
+            multi_press_timer.cancel()
+            multi_press_timer = None
+
 @app.get("/api/multi_press")
 def multi_press():
-    """MULTI_PRESS: play next clap sound from middle folder."""
-    play_middle_clap()
+    """MULTI_PRESS: play next clap sound from middle folder only if song is playing."""
+    global multi_press_timer
+    
+    # Cancel any existing timer
+    _cancel_multi_press_timer()
+    
     with songs_lock:
-        if playback_active:
-            return {"action": "MULTI_PRESS", "clap": True, "song": songs[current_song_index]}
-    return {"action": "MULTI_PRESS", "clap": True}
+        if not playback_active:
+            return {"action": "MULTI_PRESS", "error": "no song playing"}
+        
+        current_song = songs[current_song_index]
+    
+    play_middle_clap()
+    
+    # Call stage ESP32 endpoint only when action triggers
+    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/special"), daemon=True).start()
+    
+    # Set timer for second call after 10 seconds
+    with multi_press_lock:
+        multi_press_timer = threading.Timer(10.0, lambda: _post_forward("http://stage-esp32.local/show"))
+        multi_press_timer.start()
+    
+    return {"action": "MULTI_PRESS", "clap": True, "song": current_song}
 
 
 @app.get("/api/long_press")
@@ -817,6 +849,12 @@ def long_press():
         # Do nothing if already in Ready state
         if not playback_active:
             return {"action": "LONG_PRESS", "result": "already stopped"}
+    
+    # Cancel any pending multi-press timer
+    _cancel_multi_press_timer()
+    
+    # Call stage ESP32 endpoint
+    threading.Thread(target=lambda: _post_forward("http://stage-esp32.local/idle"), daemon=True).start()
     
     # Reset system (stop playback, shuffle, power off)
     _reset_system()

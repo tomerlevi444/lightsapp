@@ -30,3 +30,10 @@ Run tests:
 ```bash
 pytest -q
 ```
+
+Installing a new service:
+1.
+- Format an SD card via Raspberry Imager https://www.raspberrypi.com/software/
+- Choose Services->Enable SSH, Set username: flamingods, password: flamingods
+
+2.
