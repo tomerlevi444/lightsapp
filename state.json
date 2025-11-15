@@ -1,20 +1,19 @@
 {
   "songs": [
-    "Nirvana - Smells Like Teen Spirit",
     "Britney Spears - ...Baby One More Time",
     "R.E.M. - Losing My Religion",
-    "Spice Girls - Wannabe",
     "TLC - No Scrubs",
+    "Nirvana - Smells Like Teen Spirit",
     "Natalia Jime\u0301nez - Creo en Mi"
   ],
   "current_index": 0,
   "skip_counts": {
-    "R.E.M. - Losing My Religion": 8,
+    "R.E.M. - Losing My Religion": 10,
     "Spice Girls - Wannabe": 10,
     "Oasis - Wonderwall": 11,
-    "Nirvana - Smells Like Teen Spirit": 8,
-    "TLC - No Scrubs": 5,
-    "Britney Spears - ...Baby One More Time": 6,
+    "Nirvana - Smells Like Teen Spirit": 9,
+    "TLC - No Scrubs": 7,
+    "Britney Spears - ...Baby One More Time": 7,
     "Natalia Jime\u0301nez - Creo en Mi": 5
   }
 }

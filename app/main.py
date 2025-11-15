@@ -113,10 +113,30 @@ playback_generation = 0
 clap_processes: list[subprocess.Popen] = []
 clap_lock = threading.Lock()
 
-# Power control endpoints
-POWER_HOSTS = os.getenv("POWER_HOSTS", config.get("power_hosts", "192.168.1.104"))
-POWER_URLS = [f"http://{h}/cm?cmnd=Power%20On" for h in POWER_HOSTS.split(",")]  # default ON urls
-POWER_OFF_URLS = [u.replace("Power%20On", "Power%20Off") for u in POWER_URLS]
+# Power control endpoints (will be updated dynamically)
+POWER_URLS = []
+POWER_OFF_URLS = []
+
+def reload_power_urls():
+    """Reload power URLs from current config."""
+    global POWER_URLS, POWER_OFF_URLS
+    power_host_prefix = config.get("power_host_prefix", "")
+    power_hosts_str = os.getenv("POWER_HOSTS", config.get("power_hosts", ""))
+    power_ports_str = config.get("power_ports", "/cm?cmnd=Power%20On,/cm?cmnd=Power%20Off")
+    power_ports = power_ports_str.split(",")
+    power_on_port = power_ports[0] if len(power_ports) > 0 else "/cm?cmnd=Power%20On"
+    power_off_port = power_ports[1] if len(power_ports) > 1 else "/cm?cmnd=Power%20Off"
+    
+    if power_hosts_str:
+        full_hosts = [f"{power_host_prefix}.{h}" if power_host_prefix else h for h in power_hosts_str.split(",")]
+        POWER_URLS = [f"http://{h}{power_on_port}" for h in full_hosts]
+        POWER_OFF_URLS = [f"http://{h}{power_off_port}" for h in full_hosts]
+    else:
+        POWER_URLS = []
+        POWER_OFF_URLS = []
+    logger.info("Power URLs reloaded: ON=%s OFF=%s", POWER_URLS, POWER_OFF_URLS)
+
+reload_power_urls()
 
 # File used to persist state across restarts. Located in the repo/workdir so it's
 # easy to inspect during development. If you prefer another location, set
@@ -317,27 +337,38 @@ def _stop_clap_sounds():
 
 
 def _call_power_endpoints(state: str) -> list:
-    """Call the configured power endpoints.
+    """Call the configured power endpoints with retry logic.
 
-    state should be 'on' or 'off'. Returns list of results from _post_forward.
-    Runs synchronously; callers may invoke this in a background thread.
+    state should be 'on' or 'off'. Returns list of results.
+    Retries up to 2 times, logs only if all attempts fail.
     """
     results = []
     urls = POWER_URLS if state.lower() == "on" else POWER_OFF_URLS
     for u in urls:
-        try:
-            # These Tasmota-style /cm?cmnd=Power... endpoints expect GET requests.
-            resp = httpx.get(u, timeout=3.0)
-            status = resp.status_code
-            forwarded = 200 <= status < 300
-            # Log non-successful responses but continue to the next endpoint.
-            if not forwarded:
-                logger.error("Power endpoint %s returned non-2xx status: %s", u, status)
-            results.append({"url": u, "forwarded": forwarded, "status": status, "error": None})
-        except Exception as exc:
-            # Log the exception for visibility and continue to next endpoint.
-            logger.exception("Error calling power endpoint %s", u)
-            results.append({"url": u, "forwarded": False, "status": None, "error": str(exc)})
+        success = False
+        last_error = None
+        last_status = None
+        
+        for attempt in range(3):  # 3 attempts = initial + 2 retries
+            try:
+                resp = httpx.get(u, timeout=3.0)
+                status = resp.status_code
+                if 200 <= status < 300:
+                    success = True
+                    results.append({"url": u, "forwarded": True, "status": status, "error": None})
+                    break
+                else:
+                    last_status = status
+            except Exception as exc:
+                last_error = str(exc)
+        
+        if not success:
+            if last_status is not None:
+                logger.error("Power endpoint %s failed after 3 attempts, last status: %s", u, last_status)
+                results.append({"url": u, "forwarded": False, "status": last_status, "error": None})
+            else:
+                logger.error("Power endpoint %s failed after 3 attempts: %s", u, last_error)
+                results.append({"url": u, "forwarded": False, "status": None, "error": last_error})
     return results
 
 
@@ -555,12 +586,23 @@ def get_current_song():
 
 @app.post("/api/clear_skip_counts")
 def clear_skip_counts():
-    """Clear all skip counts."""
-    global skip_counts
+    """Clear all skip counts and recalculate/shuffle songs."""
+    global skip_counts, current_song_index
+    
+    # Clear skip counts
+    skip_counts = {}
+    
+    # Reload, filter and shuffle songs
+    folder_songs = load_songs_from_folder()
     with songs_lock:
-        skip_counts = {}
+        filtered_songs = filter_songs_by_skip_count(folder_songs)
+        songs.clear()
+        songs.extend(filtered_songs)
+        random.shuffle(songs)
+        current_song_index = 0
+    
     save_state()
-    logger.info("Skip counts cleared")
+    logger.info("Skip counts cleared, songs recalculated and shuffled")
     return {"action": "CLEAR_SKIP_COUNTS", "result": "success"}
 
 
@@ -592,9 +634,69 @@ def get_config():
     return config
 
 
+def save_config():
+    """Save configuration to config.json file and reload it."""
+    global config
+    config_path = os.path.join(os.getcwd(), "config.json")
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        config = load_config()
+        logger.info("Configuration saved and reloaded")
+    except Exception:
+        logger.exception("Failed to save config.json")
+
+
+@app.post("/api/add_power_host")
+async def add_power_host(request: dict):
+    """Add a power host to the configuration."""
+    host = request.get("host", "").strip()
+    if not host:
+        return {"result": "error", "message": "Host number required"}
+    
+    # Get current hosts
+    current_hosts = config.get("power_hosts", "")
+    hosts_list = [h.strip() for h in current_hosts.split(",") if h.strip()]
+    
+    # Add new host if not already present
+    if host not in hosts_list:
+        hosts_list.append(host)
+        config["power_hosts"] = ",".join(hosts_list)
+        save_config()
+        reload_power_urls()
+        logger.info("Added power host: %s", host)
+        return {"result": "success", "host": host}
+    else:
+        return {"result": "error", "message": "Host already exists"}
+
+
+@app.post("/api/remove_power_host")
+async def remove_power_host(request: dict):
+    """Remove a power host from the configuration."""
+    host = request.get("host", "").strip()
+    if not host:
+        return {"result": "error", "message": "Host number required"}
+    
+    # Get current hosts
+    current_hosts = config.get("power_hosts", "")
+    hosts_list = [h.strip() for h in current_hosts.split(",") if h.strip()]
+    
+    # Remove host if present
+    if host in hosts_list:
+        hosts_list.remove(host)
+        config["power_hosts"] = ",".join(hosts_list)
+        save_config()
+        reload_power_urls()
+        logger.info("Removed power host: %s", host)
+        return {"result": "success", "host": host}
+    else:
+        return {"result": "error", "message": "Host not found"}
+
+
 @app.post("/api/upload_songs")
 async def upload_songs(files: list[UploadFile] = File(...)):
     """Upload MP3 files to songs folder."""
+    global current_song_index
     main_folder = os.path.expanduser(config.get("main_folder", "~/Documents/midburn"))
     songs_dir = os.path.join(main_folder, "songs")
     
@@ -618,17 +720,15 @@ async def upload_songs(files: list[UploadFile] = File(...)):
             logger.exception("Failed to upload file: %s", file.filename)
     
     # Reload, filter and shuffle songs
-    if uploaded_count > 0:
-        global current_song_index
-        folder_songs = load_songs_from_folder()
-        with songs_lock:
-            filtered_songs = filter_songs_by_skip_count(folder_songs)
-            songs.clear()
-            songs.extend(filtered_songs)
-            random.shuffle(songs)
-            current_song_index = 0
-        save_state()
-        logger.info("Reloaded, filtered and shuffled songs after upload")
+    folder_songs = load_songs_from_folder()
+    with songs_lock:
+        filtered_songs = filter_songs_by_skip_count(folder_songs)
+        songs.clear()
+        songs.extend(filtered_songs)
+        random.shuffle(songs)
+        current_song_index = 0
+    save_state()
+    logger.info("Songs recalculated and shuffled after upload")
     
     return {"action": "UPLOAD_SONGS", "uploaded": uploaded_count}
 

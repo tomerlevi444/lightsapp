@@ -28,6 +28,9 @@
     <div class="separator"></div>
     <button id="clearHistoryBtn" class="ctl">Clear Playlist History</button>
     <button id="addSongsBtn" class="ctl">Add Songs</button>
+    <div class="separator"></div>
+    <button id="addPowerHostBtn" class="ctl">Add Power Host</button>
+    <button id="removePowerHostBtn" class="ctl">Remove Power Host</button>
   </div>
   <input type="file" id="fileInput" accept=".mp3" multiple style="display:none">
 
@@ -115,12 +118,58 @@
       event.target.value = '';
     }
 
+    async function handleAddPowerHost() {
+      const host = prompt('Enter power host number (e.g., 104, 105):');
+      if (host) {
+        try {
+          const res = await fetch('/api/add_power_host', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host.trim() })
+          });
+          const data = await res.json();
+          if (data.result === 'success') {
+            alert(`Power host ${host} added successfully`);
+          } else {
+            alert('Failed to add power host');
+          }
+        } catch (err) {
+          console.error('Failed to add power host', err);
+          alert('Error adding power host');
+        }
+      }
+    }
+
+    async function handleRemovePowerHost() {
+      const host = prompt('Enter power host number to remove (e.g., 104, 105):');
+      if (host) {
+        try {
+          const res = await fetch('/api/remove_power_host', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host.trim() })
+          });
+          const data = await res.json();
+          if (data.result === 'success') {
+            alert(`Power host ${host} removed successfully`);
+          } else {
+            alert('Failed to remove power host');
+          }
+        } catch (err) {
+          console.error('Failed to remove power host', err);
+          alert('Error removing power host');
+        }
+      }
+    }
+
     document.getElementById('singleBtn').addEventListener('click', handleSingle);
     document.getElementById('doubleBtn').addEventListener('click', handleDouble);
     document.getElementById('multiBtn').addEventListener('click', handleMulti);
     document.getElementById('longBtn').addEventListener('click', handleLong);
     document.getElementById('clearHistoryBtn').addEventListener('click', handleClearHistory);
     document.getElementById('addSongsBtn').addEventListener('click', handleAddSongs);
+    document.getElementById('addPowerHostBtn').addEventListener('click', handleAddPowerHost);
+    document.getElementById('removePowerHostBtn').addEventListener('click', handleRemovePowerHost);
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
 
     // Poll current song every 1 second
