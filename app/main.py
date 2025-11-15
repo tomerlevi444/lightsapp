@@ -18,9 +18,26 @@ import socket
 
 # Configure basic logging so INFO/ERROR messages are visible on the console by default.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Create a string buffer to capture logs
+log_buffer = []
+max_log_lines = 1000
+
+class LogHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = self.format(record)
+        log_buffer.append(log_entry)
+        if len(log_buffer) > max_log_lines:
+            log_buffer.pop(0)
+
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+
+# Add custom handler to capture logs
+log_handler = LogHandler()
+log_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(log_handler)
 
 app = FastAPI()
 
@@ -296,13 +313,15 @@ def _which_player() -> Optional[str]:
     if sys.platform == "darwin":
         candidates = ["afplay", "ffplay", "mpg123"]
     elif sys.platform.startswith("linux"):
-        candidates = ["mpg123", "ffplay", "aplay"]
+        candidates = ["mpg123", "ffplay", "omxplayer", "aplay"]
     else:
         candidates = ["ffplay", "mpg123", "afplay"]
 
     for cmd in candidates:
         if shutil.which(cmd):
+            logger.info("Found audio player: %s", cmd)
             return cmd
+    logger.error("No audio player found. Tried: %s", candidates)
     return None
 
 
@@ -342,15 +361,24 @@ def _start_playback(file_path: str) -> dict:
         args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", "50", file_path]
     elif player == "mpg123":
         args = [player, "-f", "16384", file_path]  # 50% of 32768
+    elif player == "omxplayer":
+        args = [player, "--vol", "-1000", file_path]  # Raspberry Pi player
     elif player == "aplay":
         args = [player, file_path]
     else:
         args = [player, file_path]
+    
+    logger.info("Starting playback with command: %s", " ".join(args))
 
     try:
+        # Check if file exists
+        if not os.path.exists(file_path):
+            logger.error("Audio file not found: %s", file_path)
+            return {"played": False, "path": file_path, "error": "file not found"}
+        
         # Stop previous and start new playback
         _stop_playback()
-        p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         with playback_lock:
             playback_process = p
             # advance generation so old watchers won't run
@@ -364,8 +392,26 @@ def _start_playback(file_path: str) -> dict:
         # the post-playback actions (calls power endpoints). It only runs if
         # the generation still matches (so cancelled/stopped play won't fire).
         def _watcher(proc, gen):
+            end_clap_played = False
             try:
-                proc.wait()
+                # Monitor process and play end clap 10 seconds before it ends
+                while proc.poll() is None:
+                    time.sleep(1)
+                    # Simple heuristic: play end clap after reasonable time
+                    # In practice, you'd need song duration info for precise timing
+                    if not end_clap_played and not skip_next_claps:
+                        # For now, play end clap after 30 seconds (adjust as needed)
+                        if time.time() - song_start_time > 30:
+                            with playback_lock:
+                                current_gen = playback_generation
+                            if gen == current_gen:
+                                play_end_clap()
+                                end_clap_played = True
+                
+                # Process has exited, check for errors
+                stdout, stderr = proc.communicate()
+                if proc.returncode != 0:
+                    logger.error("Playback process failed with code %d. stderr: %s", proc.returncode, stderr.decode() if stderr else "none")
             except Exception:
                 logger.exception("Watcher error waiting for playback process")
             finally:
@@ -373,11 +419,8 @@ def _start_playback(file_path: str) -> dict:
                     current_gen = playback_generation
                 logger.info("Playback process exited (gen=%s current_gen=%s)", gen, current_gen)
                 if gen == current_gen:
-                    # Play end clap only if not skipped
-                    global playback_active, current_song_index, skip_next_claps
-                    if not skip_next_claps:
-                        play_end_clap()
                     # Mark playback as inactive and advance to next song
+                    global playback_active, current_song_index
                     with songs_lock:
                         playback_active = False
                         if songs:
@@ -697,17 +740,12 @@ def single_press():
     # Call power-on endpoints in background (do not block request)
     threading.Thread(target=_call_power_endpoints, args=("on",), daemon=True).start()
 
-    # Play start clap, then song
-    def play_with_start_clap():
-        play_start_clap()
-        # Wait for start clap to finish (approximate)
-        time.sleep(2)
-        try:
-            play_song(song)
-        except Exception:
-            logger.exception("Error starting playback after start clap")
-    
-    threading.Thread(target=play_with_start_clap, daemon=True).start()
+    # Play start clap and song simultaneously
+    play_start_clap()
+    try:
+        play_song(song)
+    except Exception:
+        logger.exception("Error starting playback with start clap")
 
     return {"action": "SINGLE_PRESS", "song": song, "play": {"played": True}}
 
@@ -1210,6 +1248,27 @@ def playlist_page():
     if os.path.exists(playlist_path):
         return FileResponse(playlist_path, media_type="text/html")
     raise HTTPException(status_code=404, detail="playlist page not found")
+
+
+# Serve logs page at /logs (maps to static/logs.html)
+@app.get("/logs")
+def logs_page():
+    logs_path = os.path.join(os.getcwd(), "static", "logs.html")
+    if os.path.exists(logs_path):
+        return FileResponse(logs_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="logs page not found")
+
+
+@app.get("/api/logs")
+def get_logs():
+    """Get recent log entries from the application."""
+    try:
+        return {"logs": "\n".join(log_buffer[-100:])}
+    except Exception as e:
+        return {"logs": f"Error reading logs: {str(e)}"}
+
+
+
 
 
 # Serve the frontend from the `static` directory at the root path

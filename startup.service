@@ -1,0 +1,16 @@
+[Unit]
+Description=Startup Script
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /home/flamingods/lightsapp/run.sh
+WorkingDirectory=/home/flamingods/lightsapp
+User=flamingods
+Group=audio
+SupplementaryGroups=audio
+PAMName=login
+Restart=always
+
+[Install]
+WantedBy=default.target

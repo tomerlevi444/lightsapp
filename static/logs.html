@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Logs</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #333; }
+        #logs { 
+            background: #000; 
+            color: #0f0; 
+            padding: 20px; 
+            border-radius: 5px; 
+            font-family: monospace; 
+            white-space: pre-wrap; 
+            height: 600px; 
+            overflow-y: auto; 
+            border: 1px solid #333;
+        }
+        .back-btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <button class="back-btn" onclick="window.location.href='/admin'">← Back to Admin</button>
+        <h1>Process Logs</h1>
+        <div id="logs">Loading logs...</div>
+    </div>
+
+    <script>
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                document.getElementById('logs').textContent = data.logs || 'No logs available';
+            } catch (error) {
+                document.getElementById('logs').textContent = 'Error loading logs: ' + error.message;
+            }
+        }
+
+        // Fetch logs immediately and then every second
+        fetchLogs();
+        setInterval(fetchLogs, 1000);
+    </script>
+</body>
+</html>

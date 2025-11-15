@@ -1,14 +1,14 @@
 {
   "songs": [
-    "Britney Spears - ...Baby One More Time",
-    "R.E.M. - Losing My Religion",
-    "Natalia Jime\u0301nez - Creo en Mi",
-    "Oasis - Wonderwall",
+    "calls_incoming_ring_v2",
     "Nirvana - Smells Like Teen Spirit",
     "TLC - No Scrubs",
-    "calls_incoming_ring_v2"
+    "Natalia Jime\u0301nez - Creo en Mi",
+    "R.E.M. - Losing My Religion",
+    "Britney Spears - ...Baby One More Time",
+    "Oasis - Wonderwall"
   ],
-  "current_index": 1,
+  "current_index": 0,
   "skip_counts": {
     "R.E.M. - Losing My Religion": 19,
     "Spice Girls - Wannabe": 10,
@@ -24,8 +24,8 @@
     "pleased-crowdflac-14484"
   ],
   "middle_claps": [
-    "crowd-cheer-and-applause-406644",
-    "clap"
+    "clap",
+    "crowd-cheer-and-applause-406644"
   ],
   "end_claps": [
     "clapping-from-a-street-concert-336402",
@@ -34,5 +34,5 @@
   ],
   "current_start_clap_index": 0,
   "current_middle_clap_index": 0,
-  "current_end_clap_index": 1
+  "current_end_clap_index": 0
 }
