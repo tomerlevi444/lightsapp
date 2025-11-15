@@ -81,6 +81,13 @@ config = load_config()
 
 # Songs list - loaded from configured songs folder
 songs = []
+# Claps lists - loaded from claps subfolders
+start_claps = []
+middle_claps = []
+end_claps = []
+current_start_clap_index = 0
+current_middle_clap_index = 0
+current_end_clap_index = 0
 
 def load_songs_from_folder():
     """Load song list from configured songs folder."""
@@ -101,6 +108,29 @@ def load_songs_from_folder():
     song_names = [os.path.splitext(os.path.basename(f))[0] for f in song_files]
     logger.info("Found %d songs in %s", len(song_names), songs_dir)
     return song_names
+
+
+def load_claps_from_subfolder(subfolder_name: str):
+    """Load clap list from a specific subfolder and shuffle."""
+    main_folder = get_main_folder()
+    claps_folder = config.get("claps_folder", "claps")
+    claps_dir = os.path.join(main_folder, claps_folder, subfolder_name)
+    if not os.path.exists(claps_dir):
+        logger.warning("Claps subfolder not found: %s", claps_dir)
+        return []
+    
+    # Supported audio file extensions
+    audio_extensions = ['*.mp3', '*.wav', '*.m4a', '*.flac', '*.ogg']
+    clap_files = []
+    
+    for ext in audio_extensions:
+        clap_files.extend(glob.glob(os.path.join(claps_dir, ext)))
+    
+    # Extract just the filename without extension as clap name
+    clap_names = [os.path.splitext(os.path.basename(f))[0] for f in clap_files]
+    random.shuffle(clap_names)
+    logger.info("Found %d claps in %s/%s", len(clap_names), claps_folder, subfolder_name)
+    return clap_names
 
 
 def filter_songs_by_skip_count(all_songs: list[str]) -> list[str]:
@@ -149,6 +179,8 @@ playback_active = False
 song_start_time: float | None = None
 # skip counts for each song
 skip_counts: dict[str, int] = {}
+# flag to skip claps on next song transition
+skip_next_claps = False
 # lock to protect current_song_index and playback_active for concurrent access
 songs_lock = threading.Lock()
 
@@ -210,9 +242,19 @@ def load_state() -> Optional[dict]:
 
 
 def save_state() -> None:
-    """Persist current songs list, index, and skip counts to STATE_FILE atomically."""
+    """Persist current songs list, index, skip counts, claps, and clap indices to STATE_FILE atomically."""
     try:
-        payload = {"songs": songs, "current_index": current_song_index, "skip_counts": skip_counts}
+        payload = {
+            "songs": songs,
+            "current_index": current_song_index,
+            "skip_counts": skip_counts,
+            "start_claps": start_claps,
+            "middle_claps": middle_claps,
+            "end_claps": end_claps,
+            "current_start_clap_index": current_start_clap_index,
+            "current_middle_clap_index": current_middle_clap_index,
+            "current_end_clap_index": current_end_clap_index
+        }
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
@@ -330,11 +372,17 @@ def _start_playback(file_path: str) -> dict:
                     current_gen = playback_generation
                 logger.info("Playback process exited (gen=%s current_gen=%s)", gen, current_gen)
                 if gen == current_gen:
-                    # Mark playback as inactive
-                    global playback_active
+                    # Play end clap only if not skipped
+                    global playback_active, current_song_index, skip_next_claps
+                    if not skip_next_claps:
+                        play_end_clap()
+                    # Mark playback as inactive and advance to next song
                     with songs_lock:
                         playback_active = False
-                    logger.info("Playback finished; marked as inactive")
+                        if songs:
+                            current_song_index = (current_song_index + 1) % len(songs)
+                    save_state()
+                    logger.info("Playback finished; marked as inactive and advanced to next song")
                     # Only call power endpoints if this playback wasn't cancelled
                     logger.info("Playback finished; calling power-off endpoints")
                     # call in background so watcher returns quickly
@@ -368,13 +416,52 @@ def play_song(song_name: str) -> dict:
     return {"played": False, "path": None, "error": msg}
 
 
-def play_clap_sound():
-    """Play clap sound without stopping current playback."""
+def play_clap_from_folder(clap_list: list, index_var_name: str, subfolder: str):
+    """Play next clap sound from specified clap list and subfolder."""
+    if not clap_list:
+        logger.warning("No claps available in %s", subfolder)
+        return
+    
+    # Get current index from globals
+    if index_var_name == "start":
+        global current_start_clap_index
+        current_index = current_start_clap_index
+    elif index_var_name == "middle":
+        global current_middle_clap_index
+        current_index = current_middle_clap_index
+    else:  # end
+        global current_end_clap_index
+        current_index = current_end_clap_index
+    
     main_folder = get_main_folder()
-    clap_file = config.get("clap_file", "clap.wav")
-    clap_path = os.path.join(main_folder, clap_file)
-    if not os.path.exists(clap_path):
-        logger.warning("Clap sound not found: %s", clap_path)
+    claps_folder = config.get("claps_folder", "claps")
+    claps_dir = os.path.join(main_folder, claps_folder, subfolder)
+    
+    # Get current clap and advance index
+    clap_name = clap_list[current_index]
+    new_index = (current_index + 1) % len(clap_list)
+    
+    # Update the appropriate global index
+    if index_var_name == "start":
+        current_start_clap_index = new_index
+    elif index_var_name == "middle":
+        current_middle_clap_index = new_index
+    else:
+        current_end_clap_index = new_index
+    
+    save_state()
+    
+    # Try different audio extensions
+    audio_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg']
+    clap_path = None
+    for ext in audio_extensions:
+        test_path = os.path.join(claps_dir, f"{clap_name}{ext}")
+        if os.path.exists(test_path):
+            clap_path = test_path
+            break
+    
+    if not clap_path:
+        logger.warning("Clap sound not found: %s in %s", clap_name, subfolder)
         return
     
     player = _which_player()
@@ -397,9 +484,24 @@ def play_clap_sound():
         p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with clap_lock:
             clap_processes.append(p)
-        logger.info("Playing clap sound")
+        logger.info("Playing %s clap sound: %s", subfolder, clap_name)
     except Exception:
         logger.exception("Failed to play clap sound")
+
+
+def play_start_clap():
+    """Play a clap from the start folder."""
+    play_clap_from_folder(start_claps, "start", "start")
+
+
+def play_middle_clap():
+    """Play a clap from the middle folder."""
+    play_clap_from_folder(middle_claps, "middle", "middle")
+
+
+def play_end_clap():
+    """Play a clap from the end folder."""
+    play_clap_from_folder(end_claps, "end", "end")
 
 
 def _stop_clap_sounds():
@@ -467,7 +569,9 @@ def _reset_system():
             songs.clear()
             songs.extend(filtered_songs)
             random.shuffle(songs)
-            current_song_index = 0
+            # Ensure current_song_index is valid after shuffle
+            if current_song_index >= len(songs):
+                current_song_index = 0
             logger.info("System reset: songs filtered and shuffled")
     
     # Power off (synchronously to ensure completion)
@@ -477,7 +581,7 @@ def _reset_system():
 @app.on_event("startup")
 def startup_event():
     """Set initial song at server startup."""
-    global current_song_index, skip_counts
+    global current_song_index, skip_counts, current_clap_index
     
     # Detect and save local IP address
     local_ip = get_local_ip()
@@ -488,12 +592,32 @@ def startup_event():
     # Load songs from folder
     folder_songs = load_songs_from_folder()
     
-    # Load skip counts from persisted state
+    # Load claps from subfolders and shuffle
+    start_claps.clear()
+    start_claps.extend(load_claps_from_subfolder("start"))
+    middle_claps.clear()
+    middle_claps.extend(load_claps_from_subfolder("middle"))
+    end_claps.clear()
+    end_claps.extend(load_claps_from_subfolder("end"))
+    
+    # Load skip counts and clap indices from persisted state
     state = load_state()
     if state and isinstance(state, dict):
         loaded_skip_counts = state.get("skip_counts", {})
         if isinstance(loaded_skip_counts, dict):
             skip_counts = loaded_skip_counts
+        
+        loaded_start_index = state.get("current_start_clap_index", 0)
+        if isinstance(loaded_start_index, int):
+            current_start_clap_index = loaded_start_index
+        
+        loaded_middle_index = state.get("current_middle_clap_index", 0)
+        if isinstance(loaded_middle_index, int):
+            current_middle_clap_index = loaded_middle_index
+        
+        loaded_end_index = state.get("current_end_clap_index", 0)
+        if isinstance(loaded_end_index, int):
+            current_end_clap_index = loaded_end_index
     
     # Load all songs into list temporarily
     with songs_lock:
@@ -551,7 +675,7 @@ def _post_forward(url: str, json_payload: dict | None = None, timeout: float = 3
 
 @app.get("/api/single_press")
 def single_press():
-    """SINGLE_PRESS: play current song and call power-on endpoints, only if not already playing."""
+    """SINGLE_PRESS: play start clap, then current song, and call power-on endpoints, only if not already playing."""
     global current_song_index, playback_active, song_start_time
     
     with songs_lock:
@@ -572,24 +696,29 @@ def single_press():
     # Call power-on endpoints in background (do not block request)
     threading.Thread(target=_call_power_endpoints, args=("on",), daemon=True).start()
 
-    # Start playback (best-effort)
-    try:
-        play_res = play_song(song)
-    except Exception:
-        logger.exception("Error starting playback on single_press")
-        play_res = {"played": False, "error": "exception starting playback"}
+    # Play start clap, then song
+    def play_with_start_clap():
+        play_start_clap()
+        # Wait for start clap to finish (approximate)
+        time.sleep(2)
+        try:
+            play_song(song)
+        except Exception:
+            logger.exception("Error starting playback after start clap")
+    
+    threading.Thread(target=play_with_start_clap, daemon=True).start()
 
-    return {"action": "SINGLE_PRESS", "song": song, "play": play_res}
+    return {"action": "SINGLE_PRESS", "song": song, "play": {"played": True}}
 
 
 @app.get("/api/double_press")
 def double_press():
-    """DOUBLE_PRESS: go to next song only if playback is active."""
+    """DOUBLE_PRESS: go to next song only if playback is active, skip claps."""
     # Stop any clap sounds
     _stop_clap_sounds()
     
     # Advance to next song in the shuffled list
-    global current_song_index, playback_active, song_start_time, skip_counts
+    global current_song_index, playback_active, song_start_time, skip_counts, skip_next_claps
     
     with songs_lock:
         if not songs:
@@ -612,38 +741,44 @@ def double_press():
         song = songs[current_song_index]
         song_start_time = time.time()
 
+    # Set flag to skip claps on this transition
+    skip_next_claps = True
+    
     # Persist the new index so restarts resume here.
     save_state()
 
-    # Try to play the matching mp3 for this song (best-effort, non-blocking).
+    # Play song directly without start clap
     try:
-        play_res = play_song(song)
-        logger.info("Playback result: %s", play_res)
+        play_song(song)
+        logger.info("Playback result for: %s", song)
     except Exception:
-        # protect against any unexpected playback errors from bubbling up
         logger.exception("Error while trying to play song %s", song)
-        play_res = {"played": False, "error": "playback exception"}
+    
+    # Reset flag after starting playback
+    skip_next_claps = False
 
     # Return the song so the frontend can display it and include playback info
-    return {"action": "DOUBLE_PRESS", "song": song, "play": play_res}
+    return {"action": "DOUBLE_PRESS", "song": song, "play": {"played": True}}
 
 
 @app.get("/api/multi_press")
 def multi_press():
-    """MULTI_PRESS: play clap sound if song is playing, otherwise call external endpoint to show lights."""
+    """MULTI_PRESS: play next clap sound from middle folder."""
+    play_middle_clap()
     with songs_lock:
         if playback_active:
-            play_clap_sound()
             return {"action": "MULTI_PRESS", "clap": True, "song": songs[current_song_index]}
-    
-    url = os.getenv("SHOW_LIGHTS_URL", config.get("show_lights_url", "http://192.168.1.183/show_lights"))
-    res = _post_forward(url, json_payload={})
-    return {"action": "MULTI_PRESS", **res}
+    return {"action": "MULTI_PRESS", "clap": True}
 
 
 @app.get("/api/long_press")
 def long_press():
     """LONG_PRESS: stop playback, shuffle songs, and call power-off endpoints."""
+    with songs_lock:
+        # Do nothing if already in Ready state
+        if not playback_active:
+            return {"action": "LONG_PRESS", "result": "already stopped"}
+    
     # Reset system (stop playback, shuffle, power off)
     _reset_system()
     save_state()
@@ -843,7 +978,8 @@ async def create_playlist(request: dict):
         return {"result": "error", "message": "Playlist name required"}
     
     main_folder = get_main_folder()
-    playlist_path = os.path.join(main_folder, playlist_name)
+    playlists_folder = config.get("playlists_folder", "playlists")
+    playlist_path = os.path.join(main_folder, playlists_folder, playlist_name)
     
     if os.path.exists(playlist_path):
         return {"result": "error", "message": "Playlist already exists"}
@@ -861,13 +997,16 @@ async def create_playlist(request: dict):
 def get_playlists():
     """Get list of all playlists."""
     main_folder = get_main_folder()
-    if not os.path.exists(main_folder):
+    playlists_folder = config.get("playlists_folder", "playlists")
+    playlists_dir = os.path.join(main_folder, playlists_folder)
+    
+    if not os.path.exists(playlists_dir):
         return {"playlists": []}
     
     playlists = []
-    for item in os.listdir(main_folder):
-        item_path = os.path.join(main_folder, item)
-        if os.path.isdir(item_path) and item != "songs":
+    for item in os.listdir(playlists_dir):
+        item_path = os.path.join(playlists_dir, item)
+        if os.path.isdir(item_path):
             playlists.append(item)
     
     return {"playlists": sorted(playlists)}
@@ -877,7 +1016,8 @@ def get_playlists():
 def get_playlist_songs(playlist_name: str):
     """Get songs in a playlist in order."""
     main_folder = get_main_folder()
-    playlist_path = os.path.join(main_folder, playlist_name)
+    playlists_folder = config.get("playlists_folder", "playlists")
+    playlist_path = os.path.join(main_folder, playlists_folder, playlist_name)
     
     if not os.path.exists(playlist_path):
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -913,7 +1053,8 @@ def get_playlist_songs(playlist_name: str):
 async def upload_to_playlist(playlist_name: str, files: list[UploadFile] = File(...)):
     """Upload songs to a playlist."""
     main_folder = get_main_folder()
-    playlist_path = os.path.join(main_folder, playlist_name)
+    playlists_folder = config.get("playlists_folder", "playlists")
+    playlist_path = os.path.join(main_folder, playlists_folder, playlist_name)
     
     if not os.path.exists(playlist_path):
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -977,6 +1118,61 @@ async def move_song_in_playlist(playlist_name: str, request: dict):
     save_playlists(playlists_data)
     
     return {"result": "success", "songs": ordered_songs}
+
+
+@app.post("/api/playlist/{playlist_name}/play")
+async def play_playlist(playlist_name: str):
+    """Load and start playing a playlist."""
+    global current_song_index, playback_active
+    
+    # Stop current playback
+    _stop_playback()
+    _stop_clap_sounds()
+    
+    # Load playlist songs
+    playlists_data = load_playlists()
+    ordered_songs = playlists_data.get(playlist_name, [])
+    
+    if not ordered_songs:
+        return {"result": "error", "message": "Playlist is empty"}
+    
+    # Replace current songs with playlist songs
+    with songs_lock:
+        songs.clear()
+        songs.extend(ordered_songs)
+        current_song_index = 0
+        playback_active = False
+    
+    save_state()
+    logger.info("Loaded playlist: %s with %d songs", playlist_name, len(ordered_songs))
+    
+    return {"result": "success", "playlist": playlist_name, "songs": len(ordered_songs)}
+
+
+@app.post("/api/playlist/{playlist_name}/delete")
+async def delete_playlist(playlist_name: str):
+    """Delete a playlist folder and its contents."""
+    main_folder = get_main_folder()
+    playlists_folder = config.get("playlists_folder", "playlists")
+    playlist_path = os.path.join(main_folder, playlists_folder, playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        return {"result": "error", "message": "Playlist not found"}
+    
+    try:
+        shutil.rmtree(playlist_path)
+        logger.info("Deleted playlist: %s", playlist_name)
+        
+        # Remove from playlists.json
+        playlists_data = load_playlists()
+        if playlist_name in playlists_data:
+            del playlists_data[playlist_name]
+            save_playlists(playlists_data)
+        
+        return {"result": "success", "playlist": playlist_name}
+    except Exception:
+        logger.exception("Failed to delete playlist: %s", playlist_name)
+        return {"result": "error", "message": "Failed to delete playlist"}
 
 
 # Serve admin page at /admin (maps to static/admin.html)

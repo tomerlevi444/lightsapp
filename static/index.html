@@ -13,18 +13,18 @@
     <style>
     html, body { height: 100%; margin: 0; }
     body { font-family: Arial, sans-serif; padding: 40px; display: flex; flex-direction: column; }
-    #nextBtn { padding: 22px 48px; font-size: 24px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 240px; }
-    #nextBtn.hidden { display: none; }
+    .btn { padding: 18px 28px; font-size: 18px; border: 2px solid #ccc; background: #fff; cursor: pointer; border-radius: 8px; min-width: 160px; }
+    .btn:active { transform: translateY(1px); }
+    .btn.hidden { display: none; }
     #status { margin-top: 20px; font-size: 20px; font-weight: 600; }
-    #nextBtn:active { transform: translateY(1px); }
     a.admin { display: block; margin-top: auto; padding-top: 40px; border-top: 1px solid #ccc; text-decoration: none; color: #0066cc; font-size: 16px; cursor: pointer; }
     a.admin:hover { text-decoration: underline; }
     </style>
   </head>
   <body>
     <div id="status">Ready</div>
-    <button id="playBtn" class="hidden">Play Song</button>
-    <button id="nextBtn">Next Song</button>
+    <button id="playBtn" class="btn hidden">Play Song</button>
+    <button id="nextBtn" class="btn">Next Song</button>
     <a class="admin" href="/admin">Admin Controls</a>
 
     <script>

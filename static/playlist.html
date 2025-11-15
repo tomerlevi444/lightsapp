@@ -22,7 +22,9 @@
 <body>
   <a class="back" href="/admin">← Admin</a>
   <h1 id="playlistTitle">Playlist</h1>
+  <button id="playPlaylistBtn" class="ctl" style="background: #4CAF50; color: white;">Play</button>
   <button id="addSongBtn" class="ctl">Add Song</button>
+  <button id="deletePlaylistBtn" class="ctl" style="background: #f44336; color: white;">Delete Playlist</button>
   <div id="songsList"></div>
   <input type="file" id="fileInput" accept=".mp3" multiple style="display:none">
 
@@ -113,7 +115,48 @@
       event.target.value = '';
     }
 
+    async function handlePlayPlaylist() {
+      if (confirm(`Start playing playlist "${playlistName}"?`)) {
+        try {
+          const res = await fetch(`/api/playlist/${encodeURIComponent(playlistName)}/play`, {
+            method: 'POST'
+          });
+          const data = await res.json();
+          if (data.result === 'success') {
+            alert(`Playlist "${playlistName}" loaded with ${data.songs} songs. Click "Play Song" to start.`);
+          } else {
+            alert(data.message || 'Failed to load playlist');
+          }
+        } catch (err) {
+          console.error('Failed to play playlist', err);
+          alert('Error loading playlist');
+        }
+      }
+    }
+
+    async function handleDeletePlaylist() {
+      if (confirm(`Are you sure you want to delete playlist "${playlistName}"? This cannot be undone.`)) {
+        try {
+          const res = await fetch(`/api/playlist/${encodeURIComponent(playlistName)}/delete`, {
+            method: 'POST'
+          });
+          const data = await res.json();
+          if (data.result === 'success') {
+            alert(`Playlist "${playlistName}" deleted successfully.`);
+            window.location.href = '/admin';
+          } else {
+            alert(data.message || 'Failed to delete playlist');
+          }
+        } catch (err) {
+          console.error('Failed to delete playlist', err);
+          alert('Error deleting playlist');
+        }
+      }
+    }
+
+    document.getElementById('playPlaylistBtn').addEventListener('click', handlePlayPlaylist);
     document.getElementById('addSongBtn').addEventListener('click', handleAddSong);
+    document.getElementById('deletePlaylistBtn').addEventListener('click', handleDeletePlaylist);
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
     
     // Make moveSong available globally
